@@ -86,11 +86,13 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
         style={[styles.pickerItem, isSelected && styles.selectedPickerItem]}
         onPress={() => {
           setCurrentValue(item);
+          // 더 부드러운 애니메이션을 위한 설정
           flatListRef.current?.scrollToOffset({
             offset: index * ITEM_HEIGHT,
             animated: true,
           });
         }}
+        activeOpacity={0.7}
       >
         <Text
           style={[
@@ -142,7 +144,8 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
               renderItem={renderItem}
               showsVerticalScrollIndicator={false}
               snapToInterval={ITEM_HEIGHT}
-              decelerationRate="fast"
+              snapToAlignment="center"
+              decelerationRate={Platform.OS === 'ios' ? 0.99 : 0.9}
               onMomentumScrollEnd={handleScroll}
               onScrollEndDrag={handleScroll}
               contentContainerStyle={{
@@ -163,6 +166,12 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
                     animated: false,
                   });
                 }, 100);
+              }}
+              scrollEventThrottle={16}
+              bounces={false}
+              overScrollMode="never"
+              maintainVisibleContentPosition={{
+                minIndexForVisible: 0,
               }}
             />
           </View>
@@ -612,11 +621,13 @@ const styles = StyleSheet.create({
   pickerItemText: {
     fontSize: 20,
     color: '#666',
+    opacity: 0.6,
   },
   selectedPickerItemText: {
     fontSize: 22,
     fontWeight: '600',
     color: '#333',
+    opacity: 1,
   },
   selectionIndicator: {
     position: 'absolute',
