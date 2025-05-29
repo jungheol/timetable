@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -27,8 +27,8 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
 
-  // timeUnit에 따른 시간 옵션 생성
-  const getTimeOptions = () => {
+  // timeUnit에 따른 시간 옵션 생성 (메모화)
+  const timeOptions = useMemo(() => {
     const options: string[] = [];
     const increment = timeUnit === '30min' ? 30 : 60;
     
@@ -40,12 +40,10 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
     }
     
     return options;
-  };
-
-  const timeOptions = getTimeOptions();
+  }, [timeUnit]);
 
   // timeUnit이 변경될 때 시간 값들을 가장 가까운 유효한 시간으로 조정
-  const adjustTimeToUnit = (time: string, unit: '30min' | '1hour') => {
+  const adjustTimeToUnit = useCallback((time: string, unit: '30min' | '1hour') => {
     const [hour, minute] = time.split(':').map(Number);
     
     if (unit === '1hour') {
@@ -57,13 +55,53 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
       const adjustedHour = minute >= 45 ? (hour + 1) % 24 : hour;
       return `${adjustedHour.toString().padStart(2, '0')}:${adjustedMinute.toString().padStart(2, '0')}`;
     }
+  }, []);
+
+  const handleTimeUnitChange = useCallback((unit: '30min' | '1hour') => {
+    const newStartTime = adjustTimeToUnit(startTime, unit);
+    const newEndTime = adjustTimeToUnit(endTime, unit);
+    
+    setTimeUnit(unit);
+    setStartTime(newStartTime);
+    setEndTime(newEndTime);
+  }, [startTime, endTime, adjustTimeToUnit]);
+
+  const handleStartTimePress = () => {
+    setShowStartTimePicker(true);
   };
 
-  const handleTimeUnitChange = (unit: '30min' | '1hour') => {
-    setTimeUnit(unit);
-    // 기존 시간들을 새 단위에 맞게 조정
-    setStartTime(adjustTimeToUnit(startTime, unit));
-    setEndTime(adjustTimeToUnit(endTime, unit));
+  const handleEndTimePress = () => {
+    setShowEndTimePicker(true);
+  };
+
+  const handleStartTimeChange = (selectedTime: string) => {
+    setStartTime(selectedTime);
+    
+    // 시작시간이 종료시간보다 크거나 같으면 종료시간을 자동 조정
+    if (selectedTime >= endTime) {
+      const [hour, minute] = selectedTime.split(':').map(Number);
+      const increment = timeUnit === '30min' ? 30 : 60;
+      let nextHour = hour;
+      let nextMinute = minute + increment;
+      
+      if (nextMinute >= 60) {
+        nextHour = (nextHour + 1) % 24;
+        nextMinute = 0;
+      }
+      
+      const newEndTime = `${nextHour.toString().padStart(2, '0')}:${nextMinute.toString().padStart(2, '0')}`;
+      setEndTime(newEndTime);
+    }
+    setShowStartTimePicker(false);
+  };
+
+  const handleEndTimeChange = (selectedTime: string) => {
+    if (selectedTime <= startTime) {
+      Alert.alert('알림', '종료 시간은 시작 시간보다 늦어야 합니다.');
+      return;
+    }
+    setEndTime(selectedTime);
+    setShowEndTimePicker(false);
   };
 
   const handleSave = async () => {
@@ -157,96 +195,89 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
           </Text>
         </View>
 
-        {/* 시작 시간 설정 */}
+        {/* 시간 설정 */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>하루 시작 시간</Text>
+          <Text style={styles.sectionTitle}>하루 시간 설정</Text>
+          
+          {/* 시작 시간 설정 */}
           <TouchableOpacity
             style={styles.timeButton}
-            onPress={() => setShowStartTimePicker(!showStartTimePicker)}
+            onPress={handleStartTimePress}
           >
-            <Text style={styles.timeButtonText}>{startTime}</Text>
-            <Ionicons 
-              name={showStartTimePicker ? "chevron-up" : "chevron-down"} 
-              size={20} 
-              color="#007AFF" 
-            />
+            <View style={styles.timeButtonContent}>
+              <Text style={styles.timeButtonLabel}>시작 시간</Text>
+              <View style={styles.timeButtonValue}>
+                <Text style={styles.timeButtonText}>{startTime}</Text>
+                <Ionicons name="chevron-down" size={20} color="#007AFF" />
+              </View>
+            </View>
           </TouchableOpacity>
           
           {showStartTimePicker && (
             <View style={styles.pickerContainer}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>시작 시간을 선택하세요</Text>
+                <TouchableOpacity
+                  style={styles.pickerCloseButton}
+                  onPress={() => setShowStartTimePicker(false)}
+                >
+                  <Ionicons name="close" size={20} color="#666" />
+                </TouchableOpacity>
+              </View>
+              
               <Picker
                 selectedValue={startTime}
-                onValueChange={(value) => {
-                  setStartTime(value);
-                  if (Platform.OS === 'android') {
-                    setShowStartTimePicker(false);
-                  }
-                }}
+                onValueChange={handleStartTimeChange}
                 style={styles.picker}
               >
                 {timeOptions.map((time) => (
                   <Picker.Item key={time} label={time} value={time} />
                 ))}
               </Picker>
-              
-              {Platform.OS === 'ios' && (
-                <View style={styles.pickerButtonContainer}>
-                  <TouchableOpacity
-                    style={styles.pickerDoneButton}
-                    onPress={() => setShowStartTimePicker(false)}
-                  >
-                    <Text style={styles.pickerDoneText}>완료</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
             </View>
           )}
-        </View>
-
-        {/* 종료 시간 설정 */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>하루 종료 시간</Text>
+          
+          {/* 종료 시간 설정 */}
           <TouchableOpacity
-            style={styles.timeButton}
-            onPress={() => setShowEndTimePicker(!showEndTimePicker)}
+            style={[styles.timeButton, { marginTop: 10 }]}
+            onPress={handleEndTimePress}
           >
-            <Text style={styles.timeButtonText}>{endTime}</Text>
-            <Ionicons 
-              name={showEndTimePicker ? "chevron-up" : "chevron-down"} 
-              size={20} 
-              color="#007AFF" 
-            />
+            <View style={styles.timeButtonContent}>
+              <Text style={styles.timeButtonLabel}>종료 시간</Text>
+              <View style={styles.timeButtonValue}>
+                <Text style={styles.timeButtonText}>{endTime}</Text>
+                <Ionicons name="chevron-down" size={20} color="#007AFF" />
+              </View>
+            </View>
           </TouchableOpacity>
           
           {showEndTimePicker && (
             <View style={styles.pickerContainer}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>종료 시간을 선택하세요</Text>
+                <TouchableOpacity
+                  style={styles.pickerCloseButton}
+                  onPress={() => setShowEndTimePicker(false)}
+                >
+                  <Ionicons name="close" size={20} color="#666" />
+                </TouchableOpacity>
+              </View>
+              
               <Picker
                 selectedValue={endTime}
-                onValueChange={(value) => {
-                  setEndTime(value);
-                  if (Platform.OS === 'android') {
-                    setShowEndTimePicker(false);
-                  }
-                }}
+                onValueChange={handleEndTimeChange}
                 style={styles.picker}
               >
                 {timeOptions.map((time) => (
                   <Picker.Item key={time} label={time} value={time} />
                 ))}
               </Picker>
-              
-              {Platform.OS === 'ios' && (
-                <View style={styles.pickerButtonContainer}>
-                  <TouchableOpacity
-                    style={styles.pickerDoneButton}
-                    onPress={() => setShowEndTimePicker(false)}
-                  >
-                    <Text style={styles.pickerDoneText}>완료</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
             </View>
           )}
+          
+          <Text style={styles.unitDescription}>
+            하루 일정표에 표시될 시간 범위를 설정하세요.
+          </Text>
         </View>
 
         {/* 주말 표시 설정 */}
@@ -369,19 +400,31 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   timeButton: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     backgroundColor: '#fff',
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#ddd',
     padding: 15,
   },
+  timeButtonContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  timeButtonLabel: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: '500',
+  },
+  timeButtonValue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   timeButtonText: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#333',
+    color: '#007AFF',
   },
   pickerContainer: {
     backgroundColor: '#fff',
@@ -391,27 +434,25 @@ const styles = StyleSheet.create({
     marginTop: 10,
     overflow: 'hidden',
   },
-  picker: {
-    height: Platform.OS === 'ios' ? 200 : 50,
-  },
-  pickerButtonContainer: {
+  pickerHeader: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    padding: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
     backgroundColor: '#f8f9fa',
   },
-  pickerDoneButton: {
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 6,
-  },
-  pickerDoneText: {
-    color: '#fff',
+  pickerTitle: {
     fontSize: 16,
-    fontWeight: '500',
+    fontWeight: '600',
+    color: '#333',
+  },
+  pickerCloseButton: {
+    padding: 5,
+  },
+  picker: {
+    height: Platform.OS === 'ios' ? 200 : 50,
   },
   saveButton: {
     backgroundColor: '#007AFF',
