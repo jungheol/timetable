@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,8 +8,10 @@ import {
   Alert,
   ScrollView,
   Platform,
+  Modal,
+  FlatList,
+  Dimensions,
 } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 import moment from 'moment';
 import DatabaseService, { Schedule } from '../services/DatabaseService';
@@ -17,6 +19,158 @@ import DatabaseService, { Schedule } from '../services/DatabaseService';
 interface Props {
   onSetupComplete: () => void;
 }
+
+const { height: screenHeight } = Dimensions.get('window');
+const ITEM_HEIGHT = 44;
+const VISIBLE_ITEMS = 5;
+const PICKER_HEIGHT = ITEM_HEIGHT * VISIBLE_ITEMS;
+
+// 커스텀 Picker 컴포넌트
+interface CustomPickerProps {
+  visible: boolean;
+  title: string;
+  selectedValue: string;
+  options: string[];
+  onCancel: () => void;
+  onConfirm: (value: string) => void;
+}
+
+const CustomPicker: React.FC<CustomPickerProps> = ({
+  visible,
+  title,
+  selectedValue,
+  options,
+  onCancel,
+  onConfirm,
+}) => {
+  const [currentValue, setCurrentValue] = useState(selectedValue);
+  const flatListRef = useRef<FlatList>(null);
+
+  // Modal이 열릴 때 선택된 값으로 초기화
+  React.useEffect(() => {
+    if (visible) {
+      setCurrentValue(selectedValue);
+    }
+  }, [visible, selectedValue]);
+
+  // 선택된 인덱스 계산
+  const selectedIndex = useMemo(() => {
+    return options.indexOf(currentValue);
+  }, [currentValue, options]);
+
+  // Modal이 열릴 때 선택된 아이템으로 스크롤
+  React.useEffect(() => {
+    if (visible && flatListRef.current && selectedIndex >= 0) {
+      // setTimeout을 사용하여 Modal이 완전히 렌더링된 후 스크롤
+      setTimeout(() => {
+        flatListRef.current?.scrollToOffset({
+          offset: selectedIndex * ITEM_HEIGHT,
+          animated: false,
+        });
+      }, 150);
+    }
+  }, [visible, selectedIndex]);
+
+  const handleScroll = (event: any) => {
+    const offsetY = event.nativeEvent.contentOffset.y;
+    const index = Math.round(offsetY / ITEM_HEIGHT);
+    if (index >= 0 && index < options.length) {
+      setCurrentValue(options[index]);
+    }
+  };
+
+  const renderItem = ({ item, index }: { item: string; index: number }) => {
+    const isSelected = item === currentValue;
+    return (
+      <TouchableOpacity
+        style={[styles.pickerItem, isSelected && styles.selectedPickerItem]}
+        onPress={() => {
+          setCurrentValue(item);
+          flatListRef.current?.scrollToOffset({
+            offset: index * ITEM_HEIGHT,
+            animated: true,
+          });
+        }}
+      >
+        <Text
+          style={[
+            styles.pickerItemText,
+            isSelected && styles.selectedPickerItemText,
+          ]}
+        >
+          {item}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const handleConfirm = () => {
+    onConfirm(currentValue);
+  };
+
+  const handleCancel = () => {
+    onCancel();
+  };
+
+  if (!visible) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="slide"
+      onRequestClose={handleCancel}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={handleCancel}>
+              <Text style={styles.modalCancelText}>취소</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>{title}</Text>
+            <TouchableOpacity onPress={handleConfirm}>
+              <Text style={styles.modalDoneText}>완료</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.pickerContainer}>
+            <View style={styles.selectionIndicator} />
+            <FlatList
+              ref={flatListRef}
+              data={options}
+              keyExtractor={(item) => item}
+              renderItem={renderItem}
+              showsVerticalScrollIndicator={false}
+              snapToInterval={ITEM_HEIGHT}
+              decelerationRate="fast"
+              onMomentumScrollEnd={handleScroll}
+              onScrollEndDrag={handleScroll}
+              contentContainerStyle={{
+                paddingVertical: PICKER_HEIGHT / 2 - ITEM_HEIGHT / 2,
+              }}
+              getItemLayout={(data, index) => ({
+                length: ITEM_HEIGHT,
+                offset: ITEM_HEIGHT * index,
+                index,
+              })}
+              style={{ height: PICKER_HEIGHT }}
+              initialScrollIndex={selectedIndex >= 0 ? selectedIndex : 0}
+              onScrollToIndexFailed={() => {
+                // 스크롤 실패 시 대체 처리
+                setTimeout(() => {
+                  flatListRef.current?.scrollToOffset({
+                    offset: selectedIndex * ITEM_HEIGHT,
+                    animated: false,
+                  });
+                }, 100);
+              }}
+            />
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
 
 const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
   const [timeUnit, setTimeUnit] = useState<'30min' | '1hour'>('1hour');
@@ -66,15 +220,7 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
     setEndTime(newEndTime);
   }, [startTime, endTime, adjustTimeToUnit]);
 
-  const handleStartTimePress = () => {
-    setShowStartTimePicker(true);
-  };
-
-  const handleEndTimePress = () => {
-    setShowEndTimePicker(true);
-  };
-
-  const handleStartTimeChange = (selectedTime: string) => {
+  const handleStartTimeConfirm = (selectedTime: string) => {
     setStartTime(selectedTime);
     
     // 시작시간이 종료시간보다 크거나 같으면 종료시간을 자동 조정
@@ -95,7 +241,7 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
     setShowStartTimePicker(false);
   };
 
-  const handleEndTimeChange = (selectedTime: string) => {
+  const handleEndTimeConfirm = (selectedTime: string) => {
     if (selectedTime <= startTime) {
       Alert.alert('알림', '종료 시간은 시작 시간보다 늦어야 합니다.');
       return;
@@ -202,7 +348,7 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
           {/* 시작 시간 설정 */}
           <TouchableOpacity
             style={styles.timeButton}
-            onPress={handleStartTimePress}
+            onPress={() => setShowStartTimePicker(true)}
           >
             <View style={styles.timeButtonContent}>
               <Text style={styles.timeButtonLabel}>시작 시간</Text>
@@ -213,34 +359,10 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
             </View>
           </TouchableOpacity>
           
-          {showStartTimePicker && (
-            <View style={styles.pickerContainer}>
-              <View style={styles.pickerHeader}>
-                <Text style={styles.pickerTitle}>시작 시간을 선택하세요</Text>
-                <TouchableOpacity
-                  style={styles.pickerCloseButton}
-                  onPress={() => setShowStartTimePicker(false)}
-                >
-                  <Ionicons name="close" size={20} color="#666" />
-                </TouchableOpacity>
-              </View>
-              
-              <Picker
-                selectedValue={startTime}
-                onValueChange={handleStartTimeChange}
-                style={styles.picker}
-              >
-                {timeOptions.map((time) => (
-                  <Picker.Item key={time} label={time} value={time} />
-                ))}
-              </Picker>
-            </View>
-          )}
-          
           {/* 종료 시간 설정 */}
           <TouchableOpacity
             style={[styles.timeButton, { marginTop: 10 }]}
-            onPress={handleEndTimePress}
+            onPress={() => setShowEndTimePicker(true)}
           >
             <View style={styles.timeButtonContent}>
               <Text style={styles.timeButtonLabel}>종료 시간</Text>
@@ -250,30 +372,6 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
               </View>
             </View>
           </TouchableOpacity>
-          
-          {showEndTimePicker && (
-            <View style={styles.pickerContainer}>
-              <View style={styles.pickerHeader}>
-                <Text style={styles.pickerTitle}>종료 시간을 선택하세요</Text>
-                <TouchableOpacity
-                  style={styles.pickerCloseButton}
-                  onPress={() => setShowEndTimePicker(false)}
-                >
-                  <Ionicons name="close" size={20} color="#666" />
-                </TouchableOpacity>
-              </View>
-              
-              <Picker
-                selectedValue={endTime}
-                onValueChange={handleEndTimeChange}
-                style={styles.picker}
-              >
-                {timeOptions.map((time) => (
-                  <Picker.Item key={time} label={time} value={time} />
-                ))}
-              </Picker>
-            </View>
-          )}
           
           <Text style={styles.unitDescription}>
             하루 일정표에 표시될 시간 범위를 설정하세요.
@@ -332,6 +430,26 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* 커스텀 시작 시간 Picker */}
+      <CustomPicker
+        visible={showStartTimePicker}
+        title="시작 시간"
+        selectedValue={startTime}
+        options={timeOptions}
+        onCancel={() => setShowStartTimePicker(false)}
+        onConfirm={handleStartTimeConfirm}
+      />
+
+      {/* 커스텀 종료 시간 Picker */}
+      <CustomPicker
+        visible={showEndTimePicker}
+        title="종료 시간"
+        selectedValue={endTime}
+        options={timeOptions}
+        onCancel={() => setShowEndTimePicker(false)}
+        onConfirm={handleEndTimeConfirm}
+      />
     </SafeAreaView>
   );
 };
@@ -426,34 +544,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#007AFF',
   },
-  pickerContainer: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    marginTop: 10,
-    overflow: 'hidden',
-  },
-  pickerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-    backgroundColor: '#f8f9fa',
-  },
-  pickerTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  pickerCloseButton: {
-    padding: 5,
-  },
-  picker: {
-    height: Platform.OS === 'ios' ? 200 : 50,
-  },
   saveButton: {
     backgroundColor: '#007AFF',
     paddingVertical: 15,
@@ -468,6 +558,77 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '600',
+  },
+  // Modal 및 커스텀 Picker 스타일
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: Platform.OS === 'ios' ? 30 : 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+  },
+  modalCancelText: {
+    fontSize: 16,
+    color: '#666',
+  },
+  modalDoneText: {
+    fontSize: 16,
+    color: '#007AFF',
+    fontWeight: '600',
+  },
+  // 커스텀 Picker 스타일
+  pickerContainer: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerItem: {
+    height: ITEM_HEIGHT,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  selectedPickerItem: {
+    // 선택된 아이템 스타일
+  },
+  pickerItemText: {
+    fontSize: 20,
+    color: '#666',
+  },
+  selectedPickerItemText: {
+    fontSize: 22,
+    fontWeight: '600',
+    color: '#333',
+  },
+  selectionIndicator: {
+    position: 'absolute',
+    top: PICKER_HEIGHT / 2 - ITEM_HEIGHT / 2,
+    left: 20,
+    right: 20,
+    height: ITEM_HEIGHT,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#e0e0e0',
+    backgroundColor: 'rgba(0, 122, 255, 0.05)',
+    zIndex: -1,
   },
 });
 
