@@ -111,7 +111,7 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     const end = moment(schedule.end_time, 'HH:mm');
     
     // 기본적으로 1시간 단위로, 나중에 timeUnit 정보를 추가할 수 있음
-    const increment = 60; // minutes
+    const increment = schedule.time_unit === '30min' ? 30 : 60; // minutes
     
     let current = start.clone();
     while (current.isBefore(end)) {

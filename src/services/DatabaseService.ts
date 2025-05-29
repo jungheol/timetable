@@ -7,6 +7,7 @@ export interface Schedule {
   end_time: string;
   show_weekend: boolean;
   is_active: boolean;
+  time_unit?: '30min' | '1hour';
   created_at?: string;
   updated_at?: string;
   del_yn?: boolean;
@@ -69,6 +70,9 @@ export interface RecurringPattern {
 class DatabaseService {
   private db: SQLite.SQLiteDatabase | null = null;
 
+  // 🔧 개발 모드 설정
+  private DEVELOPMENT_MODE = true;
+
   constructor() {
     this.initDatabase();
   }
@@ -76,6 +80,16 @@ class DatabaseService {
   private async initDatabase() {
     try {
       this.db = await SQLite.openDatabaseAsync('student_schedule.db');
+
+      // 🔧 개발 모드일 때 모든 테이블 삭제 후 재생성
+      if (this.DEVELOPMENT_MODE) {
+        console.log('🔧 Development mode: Dropping all tables...');
+        await this.db.execAsync(`DROP TABLE IF EXISTS events;`);
+        await this.db.execAsync(`DROP TABLE IF EXISTS academies;`);
+        await this.db.execAsync(`DROP TABLE IF EXISTS recurring_patterns;`);
+        await this.db.execAsync(`DROP TABLE IF EXISTS schedules;`);
+        console.log('✅ All tables dropped');
+      }
       
       // 일정표 테이블
       await this.db.execAsync(`
@@ -86,6 +100,7 @@ class DatabaseService {
           end_time TEXT NOT NULL,
           show_weekend BOOLEAN DEFAULT FALSE,
           is_active BOOLEAN DEFAULT TRUE,
+          time_unit TEXT DEFAULT '1hour',
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           del_yn BOOLEAN DEFAULT FALSE
@@ -198,19 +213,20 @@ class DatabaseService {
     }
   }
 
-   async createSchedule(schedule: Omit<Schedule, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
+  async createSchedule(schedule: Omit<Schedule, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
     try {
       const db = await this.ensureDbConnection();
       const result = await db.runAsync(
         `INSERT INTO schedules (
-          name, start_time, end_time, show_weekend, is_active, del_yn
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
+          name, start_time, end_time, show_weekend, is_active, time_unit, del_yn
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
           schedule.name,
           schedule.start_time,
           schedule.end_time,
           schedule.show_weekend ? 1 : 0,
           schedule.is_active ? 1 : 0,
+          schedule.time_unit || '1hour',
           schedule.del_yn ? 1 : 0
         ]
       );
@@ -227,9 +243,16 @@ class DatabaseService {
       await db.runAsync(
         `UPDATE schedules SET 
          name = ?, start_time = ?, end_time = ?, show_weekend = ?, 
-         updated_at = CURRENT_TIMESTAMP
+         time_unit = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
-        [schedule.name, schedule.start_time, schedule.end_time, schedule.show_weekend ? 1 : 0, schedule.id]
+        [
+          schedule.name, 
+          schedule.start_time, 
+          schedule.end_time, 
+          schedule.show_weekend ? 1 : 0,
+          schedule.time_unit || '1hour',
+          schedule.id
+        ]
       );
     } catch (error) {
       console.error('Error updating schedule:', error);

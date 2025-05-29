@@ -284,6 +284,7 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
         end_time: endTime,
         show_weekend: showWeekend,
         is_active: true,
+        time_unit: timeUnit,
         del_yn: false,
       };
 

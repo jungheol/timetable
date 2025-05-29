@@ -94,6 +94,8 @@ export default function App() {
       // 🔧 개발 모드일 때는 항상 초기 설정 화면 표시
       if (DEVELOPMENT_MODE) {
         console.log('🔧 Development mode: showing initial setup');
+        // 약간의 지연을 주어 DB 초기화가 완료되도록 함
+        await new Promise(resolve => setTimeout(resolve, 1000));
         setIsFirstTime(true);
         setIsLoading(false);
         return;
