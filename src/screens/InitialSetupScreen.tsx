@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -7,179 +7,15 @@ import {
   SafeAreaView,
   Alert,
   ScrollView,
-  Platform,
-  Modal,
-  FlatList,
-  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import moment from 'moment';
 import DatabaseService, { Schedule } from '../services/DatabaseService';
+import CustomPicker from '../components/CustomPicker';
 
 interface Props {
   onSetupComplete: () => void;
 }
-
-const { height: screenHeight } = Dimensions.get('window');
-const ITEM_HEIGHT = 44;
-const VISIBLE_ITEMS = 5;
-const PICKER_HEIGHT = ITEM_HEIGHT * VISIBLE_ITEMS;
-
-// 커스텀 Picker 컴포넌트
-interface CustomPickerProps {
-  visible: boolean;
-  title: string;
-  selectedValue: string;
-  options: string[];
-  onCancel: () => void;
-  onConfirm: (value: string) => void;
-}
-
-const CustomPicker: React.FC<CustomPickerProps> = ({
-  visible,
-  title,
-  selectedValue,
-  options,
-  onCancel,
-  onConfirm,
-}) => {
-  const [currentValue, setCurrentValue] = useState(selectedValue);
-  const flatListRef = useRef<FlatList>(null);
-
-  // Modal이 열릴 때 선택된 값으로 초기화
-  React.useEffect(() => {
-    if (visible) {
-      setCurrentValue(selectedValue);
-    }
-  }, [visible, selectedValue]);
-
-  // 선택된 인덱스 계산
-  const selectedIndex = useMemo(() => {
-    return options.indexOf(currentValue);
-  }, [currentValue, options]);
-
-  // Modal이 열릴 때 선택된 아이템으로 스크롤
-  React.useEffect(() => {
-    if (visible && flatListRef.current && selectedIndex >= 0) {
-      // setTimeout을 사용하여 Modal이 완전히 렌더링된 후 스크롤
-      setTimeout(() => {
-        flatListRef.current?.scrollToOffset({
-          offset: selectedIndex * ITEM_HEIGHT,
-          animated: false,
-        });
-      }, 150);
-    }
-  }, [visible, selectedIndex]);
-
-  const handleScroll = (event: any) => {
-    const offsetY = event.nativeEvent.contentOffset.y;
-    const index = Math.round(offsetY / ITEM_HEIGHT);
-    if (index >= 0 && index < options.length) {
-      setCurrentValue(options[index]);
-    }
-  };
-
-  const renderItem = ({ item, index }: { item: string; index: number }) => {
-    const isSelected = item === currentValue;
-    return (
-      <TouchableOpacity
-        style={[styles.pickerItem, isSelected && styles.selectedPickerItem]}
-        onPress={() => {
-          setCurrentValue(item);
-          // 더 부드러운 애니메이션을 위한 설정
-          flatListRef.current?.scrollToOffset({
-            offset: index * ITEM_HEIGHT,
-            animated: true,
-          });
-        }}
-        activeOpacity={0.7}
-      >
-        <Text
-          style={[
-            styles.pickerItemText,
-            isSelected && styles.selectedPickerItemText,
-          ]}
-        >
-          {item}
-        </Text>
-      </TouchableOpacity>
-    );
-  };
-
-  const handleConfirm = () => {
-    onConfirm(currentValue);
-  };
-
-  const handleCancel = () => {
-    onCancel();
-  };
-
-  if (!visible) return null;
-
-  return (
-    <Modal
-      visible={visible}
-      transparent={true}
-      animationType="slide"
-      onRequestClose={handleCancel}
-    >
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={handleCancel}>
-              <Text style={styles.modalCancelText}>취소</Text>
-            </TouchableOpacity>
-            <Text style={styles.modalTitle}>{title}</Text>
-            <TouchableOpacity onPress={handleConfirm}>
-              <Text style={styles.modalDoneText}>완료</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.pickerContainer}>
-            <View style={styles.selectionIndicator} />
-            <FlatList
-              ref={flatListRef}
-              data={options}
-              keyExtractor={(item) => item}
-              renderItem={renderItem}
-              showsVerticalScrollIndicator={false}
-              snapToInterval={ITEM_HEIGHT}
-              snapToAlignment="center"
-              decelerationRate={Platform.OS === 'ios' ? 0.99 : 0.9}
-              onMomentumScrollEnd={handleScroll}
-              onScrollEndDrag={handleScroll}
-              contentContainerStyle={{
-                paddingVertical: PICKER_HEIGHT / 2 - ITEM_HEIGHT / 2,
-              }}
-              getItemLayout={(data, index) => ({
-                length: ITEM_HEIGHT,
-                offset: ITEM_HEIGHT * index,
-                index,
-              })}
-              style={{ height: PICKER_HEIGHT }}
-              initialScrollIndex={selectedIndex >= 0 ? selectedIndex : 0}
-              onScrollToIndexFailed={() => {
-                // 스크롤 실패 시 대체 처리
-                setTimeout(() => {
-                  flatListRef.current?.scrollToOffset({
-                    offset: selectedIndex * ITEM_HEIGHT,
-                    animated: false,
-                  });
-                }, 100);
-              }}
-              scrollEventThrottle={16}
-              bounces={false}
-              overScrollMode="never"
-              maintainVisibleContentPosition={{
-                minIndexForVisible: 0,
-              }}
-            />
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-};
 
 const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
   const [timeUnit, setTimeUnit] = useState<'30min' | '1hour'>('1hour');
@@ -568,79 +404,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '600',
-  },
-  // Modal 및 커스텀 Picker 스타일
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingBottom: Platform.OS === 'ios' ? 30 : 20,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-  },
-  modalCancelText: {
-    fontSize: 16,
-    color: '#666',
-  },
-  modalDoneText: {
-    fontSize: 16,
-    color: '#007AFF',
-    fontWeight: '600',
-  },
-  // 커스텀 Picker 스타일
-  pickerContainer: {
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pickerItem: {
-    height: ITEM_HEIGHT,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  selectedPickerItem: {
-    // 선택된 아이템 스타일
-  },
-  pickerItemText: {
-    fontSize: 20,
-    color: '#666',
-    opacity: 0.6,
-  },
-  selectedPickerItemText: {
-    fontSize: 22,
-    fontWeight: '600',
-    color: '#333',
-    opacity: 1,
-  },
-  selectionIndicator: {
-    position: 'absolute',
-    top: PICKER_HEIGHT / 2 - ITEM_HEIGHT / 2,
-    left: 20,
-    right: 20,
-    height: ITEM_HEIGHT,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#e0e0e0',
-    backgroundColor: 'rgba(0, 122, 255, 0.05)',
-    zIndex: -1,
   },
 });
 
