@@ -37,16 +37,22 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
 }) => {
   const [currentValue, setCurrentValue] = useState(selectedValue);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [isInitialized, setIsInitialized] = useState(false);
   const scrollY = useRef(new Animated.Value(0)).current;
   const flatListRef = useRef<Animated.FlatList>(null);
+  const prevOptionsRef = useRef<string[]>([]);
+  const prevVisibleRef = useRef<boolean>(false);
 
   // Modal이 열릴 때 선택된 값으로 초기화
   useEffect(() => {
-    if (visible) {
+    if (visible && !prevVisibleRef.current) {
+      // Modal이 새로 열릴 때만 초기화
       setCurrentValue(selectedValue);
       const index = options.indexOf(selectedValue);
       setCurrentIndex(index >= 0 ? index : 0);
+      setIsInitialized(false);
     }
+    prevVisibleRef.current = visible;
   }, [visible, selectedValue, options]);
 
   // 패딩을 위한 수정된 옵션 리스트 (앞뒤로 빈 아이템 추가)
@@ -54,19 +60,37 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
     return ['', '', ...options, '', ''];
   }, [options]);
 
-  // Modal이 열릴 때 선택된 아이템으로 스크롤
+  // options가 변경되었는지 확인하는 함수
+  const hasOptionsChanged = useCallback(() => {
+    if (prevOptionsRef.current.length !== options.length) {
+      return true;
+    }
+    return prevOptionsRef.current.some((item, index) => item !== options[index]);
+  }, [options]);
+
+  // Modal이 열릴 때 또는 options가 변경될 때 선택된 아이템으로 스크롤
   useEffect(() => {
     if (visible && flatListRef.current && currentIndex >= 0) {
-      setTimeout(() => {
+      const optionsChanged = hasOptionsChanged();
+      
+      // options가 변경되었거나 아직 초기화되지 않은 경우에만 스크롤
+      if (!isInitialized || optionsChanged) {
         const targetOffset = currentIndex * ITEM_HEIGHT;
-        flatListRef.current?.scrollToOffset({
-          offset: targetOffset,
-          animated: false,
-        });
-        scrollY.setValue(targetOffset);
-      }, 150);
+        
+        setTimeout(() => {
+          flatListRef.current?.scrollToOffset({
+            offset: targetOffset,
+            animated: false, // 애니메이션 없이 즉시 이동
+          });
+          scrollY.setValue(targetOffset);
+          setIsInitialized(true);
+        }, 100); // 딜레이를 줄임
+        
+        // 이전 options 저장
+        prevOptionsRef.current = [...options];
+      }
     }
-  }, [visible, currentIndex, scrollY]);
+  }, [visible, currentIndex, scrollY, isInitialized, hasOptionsChanged, options]);
 
   // 아이템 렌더링 - WheelPicker 스타일로 수정
   const renderItem = useCallback(({ item, index }: ListRenderItemInfo<string>) => {
@@ -136,8 +160,16 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
   };
 
   const handleCancel = () => {
+    setIsInitialized(false); // 취소 시 초기화 상태 리셋
     onCancel();
   };
+
+  // Modal이 닫힐 때 초기화 상태 리셋
+  useEffect(() => {
+    if (!visible) {
+      setIsInitialized(false);
+    }
+  }, [visible]);
 
   if (!visible) return null;
 
