@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -11,12 +11,12 @@ import {
   SafeAreaView,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 import moment from 'moment';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
-import DatabaseService, { Event, Academy } from '../services/DatabaseService';
+import DatabaseService, { Event, Academy, Schedule } from '../services/DatabaseService';
+import CustomPicker from '../components/CustomPicker';
 
 // App.tsx에서 정의된 타입 import
 import { RootStackParamList } from '../../App';
@@ -38,23 +38,57 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   const [category, setCategory] = useState<Event['category']>('선택안함');
   const [academyId, setAcademyId] = useState<number | undefined>();
   const [academies, setAcademies] = useState<Academy[]>([]);
+  const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
+  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  const [showAcademyPicker, setShowAcademyPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    loadAcademies();
+    loadData();
     initializeForm();
   }, []);
 
-  const loadAcademies = async () => {
+  const loadData = async () => {
     try {
-      const academyList = await DatabaseService.getAcademies();
+      const [academyList, activeSchedule] = await Promise.all([
+        DatabaseService.getAcademies(),
+        DatabaseService.getActiveSchedule()
+      ]);
+      
       setAcademies(academyList.filter(a => a.status === '진행'));
+      setSchedule(activeSchedule);
     } catch (error) {
-      console.error('Error loading academies:', error);
+      console.error('Error loading data:', error);
     }
   };
+
+  // 시간 옵션 생성 (스케줄 설정에 따라)
+  const timeOptions = useMemo(() => {
+    if (!schedule) return [];
+    
+    const options: string[] = [];
+    const startMoment = moment(schedule.start_time, 'HH:mm');
+    const endMoment = moment(schedule.end_time, 'HH:mm');
+    const interval = schedule.time_unit === '30min' ? 30 : 60;
+    
+    let current = startMoment.clone();
+    while (current.isSameOrBefore(endMoment)) {
+      options.push(current.format('HH:mm'));
+      current.add(interval, 'minutes');
+    }
+    
+    return options;
+  }, [schedule]);
+
+  // 카테고리 옵션
+  const categoryOptions = ['선택안함', '학교/기관', '학원', '공부', '휴식'];
+
+  // 학원 옵션 (이름과 과목 조합)
+  const academyOptions = useMemo(() => {
+    return academies.map(academy => `${academy.name} (${academy.subject})`);
+  }, [academies]);
 
   const initializeForm = () => {
     if (event) {
@@ -167,7 +201,8 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       setStartTime(selectedTime);
       // 종료 시간이 시작 시간보다 빠르면 자동 조정
       if (selectedTime >= endTime) {
-        setEndTime(moment(selectedTime).add(1, 'hour').toDate());
+        const interval = schedule?.time_unit === '30min' ? 30 : 60;
+        setEndTime(moment(selectedTime).add(interval, 'minutes').toDate());
       }
     }
   };
@@ -177,6 +212,48 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     if (selectedTime) {
       setEndTime(selectedTime);
     }
+  };
+
+  // CustomPicker 핸들러들
+  const handleStartTimeConfirm = (value: string) => {
+    const newStartTime = moment(`${selectedDate} ${value}`).toDate();
+    setStartTime(newStartTime);
+    
+    // 종료 시간이 시작 시간보다 빠르면 자동 조정
+    if (newStartTime >= endTime) {
+      const interval = schedule?.time_unit === '30min' ? 30 : 60;
+      setEndTime(moment(newStartTime).add(interval, 'minutes').toDate());
+    }
+    
+    setShowStartTimePicker(false);
+  };
+
+  const handleEndTimeConfirm = (value: string) => {
+    const newEndTime = moment(`${selectedDate} ${value}`).toDate();
+    setEndTime(newEndTime);
+    setShowEndTimePicker(false);
+  };
+
+  const handleCategoryConfirm = (value: string) => {
+    setCategory(value as Event['category']);
+    if (value !== '학원') {
+      setAcademyId(undefined);
+    }
+    setShowCategoryPicker(false);
+  };
+
+  const handleAcademyConfirm = (value: string) => {
+    const selectedAcademy = academies.find(
+      academy => `${academy.name} (${academy.subject})` === value
+    );
+    setAcademyId(selectedAcademy?.id);
+    setShowAcademyPicker(false);
+  };
+
+  const getSelectedAcademyName = () => {
+    if (!academyId) return '학원을 선택하세요';
+    const academy = academies.find(a => a.id === academyId);
+    return academy ? `${academy.name} (${academy.subject})` : '학원을 선택하세요';
   };
 
   return (
@@ -265,41 +342,31 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         {/* 카테고리 */}
         <View style={styles.formGroup}>
           <Text style={styles.label}>카테고리</Text>
-          <View style={styles.pickerContainer}>
-            <Picker
-              selectedValue={category}
-              onValueChange={setCategory}
-              style={styles.picker}
-            >
-              <Picker.Item label="선택안함" value="선택안함" />
-              <Picker.Item label="학교/기관" value="학교/기관" />
-              <Picker.Item label="학원" value="학원" />
-              <Picker.Item label="공부" value="공부" />
-              <Picker.Item label="휴식" value="휴식" />
-            </Picker>
-          </View>
+          <TouchableOpacity
+            style={styles.pickerButton}
+            onPress={() => setShowCategoryPicker(true)}
+          >
+            <Text style={styles.pickerButtonText}>{category}</Text>
+            <Ionicons name="chevron-down-outline" size={20} color="#666" />
+          </TouchableOpacity>
         </View>
 
         {/* 학원 선택 (카테고리가 '학원'일 때만) */}
         {category === '학원' && (
           <View style={styles.formGroup}>
             <Text style={styles.label}>학원 선택</Text>
-            <View style={styles.pickerContainer}>
-              <Picker
-                selectedValue={academyId}
-                onValueChange={setAcademyId}
-                style={styles.picker}
-              >
-                <Picker.Item label="학원을 선택하세요" value={undefined} />
-                {academies.map(academy => (
-                  <Picker.Item
-                    key={academy.id}
-                    label={`${academy.name} (${academy.subject})`}
-                    value={academy.id}
-                  />
-                ))}
-              </Picker>
-            </View>
+            <TouchableOpacity
+              style={styles.pickerButton}
+              onPress={() => setShowAcademyPicker(true)}
+            >
+              <Text style={[
+                styles.pickerButtonText,
+                !academyId && styles.placeholderText
+              ]}>
+                {getSelectedAcademyName()}
+              </Text>
+              <Ionicons name="chevron-down-outline" size={20} color="#666" />
+            </TouchableOpacity>
             
             {academies.length === 0 && (
               <Text style={styles.noAcademyText}>
@@ -323,8 +390,8 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </TouchableOpacity>
       </View>
 
-      {/* 시간 선택기 */}
-      {showStartTimePicker && (
+      {/* 기본 시간 선택기 (fallback) */}
+      {showStartTimePicker && timeOptions.length === 0 && (
         <DateTimePicker
           value={startTime}
           mode="time"
@@ -334,13 +401,52 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         />
       )}
 
-      {showEndTimePicker && (
+      {showEndTimePicker && timeOptions.length === 0 && (
         <DateTimePicker
           value={endTime}
           mode="time"
           is24Hour={true}
           display="default"
           onChange={onEndTimeChange}
+        />
+      )}
+
+      {/* CustomPicker들 */}
+      <CustomPicker
+        visible={showStartTimePicker && timeOptions.length > 0}
+        title="시작 시간"
+        selectedValue={moment(startTime).format('HH:mm')}
+        options={timeOptions}
+        onCancel={() => setShowStartTimePicker(false)}
+        onConfirm={handleStartTimeConfirm}
+      />
+
+      <CustomPicker
+        visible={showEndTimePicker && timeOptions.length > 0}
+        title="종료 시간"
+        selectedValue={moment(endTime).format('HH:mm')}
+        options={timeOptions}
+        onCancel={() => setShowEndTimePicker(false)}
+        onConfirm={handleEndTimeConfirm}
+      />
+
+      <CustomPicker
+        visible={showCategoryPicker}
+        title="카테고리"
+        selectedValue={category}
+        options={categoryOptions}
+        onCancel={() => setShowCategoryPicker(false)}
+        onConfirm={handleCategoryConfirm}
+      />
+
+      {category === '학원' && academies.length > 0 && (
+        <CustomPicker
+          visible={showAcademyPicker}
+          title="학원 선택"
+          selectedValue={getSelectedAcademyName()}
+          options={academyOptions}
+          onCancel={() => setShowAcademyPicker(false)}
+          onConfirm={handleAcademyConfirm}
         />
       )}
     </SafeAreaView>
@@ -446,15 +552,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontStyle: 'italic',
   },
-  pickerContainer: {
+  pickerButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     borderWidth: 1,
     borderColor: '#ddd',
     borderRadius: 12,
+    padding: 15,
     backgroundColor: '#fff',
-    overflow: 'hidden',
   },
-  picker: {
-    height: 50,
+  pickerButtonText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  placeholderText: {
+    color: '#999',
   },
   noAcademyText: {
     fontSize: 14,
