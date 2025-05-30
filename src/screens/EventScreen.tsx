@@ -7,10 +7,9 @@ import {
   TouchableOpacity,
   Alert,
   ScrollView,
-  Platform,
+  Switch,
   SafeAreaView,
 } from 'react-native';
-import DateTimePicker from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import moment from 'moment';
 import { StackNavigationProp } from '@react-navigation/stack';
@@ -29,42 +28,57 @@ interface Props {
   route: EventScreenRouteProp;
 }
 
+interface DayButton {
+  key: string;
+  label: string;
+  index: number;
+}
+
 const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   const { event, selectedDate, selectedTime, scheduleId, onSave } = route.params;
 
+  // 기본 상태
   const [title, setTitle] = useState('');
-  const [startTime, setStartTime] = useState(new Date());
-  const [endTime, setEndTime] = useState(new Date());
+  const [startTime, setStartTime] = useState('');
+  const [endTime, setEndTime] = useState('');
+  const [selectedDays, setSelectedDays] = useState<Set<string>>(new Set());
   const [category, setCategory] = useState<Event['category']>('선택안함');
-  const [academyId, setAcademyId] = useState<number | undefined>();
-  const [academies, setAcademies] = useState<Academy[]>([]);
+  const [academyName, setAcademyName] = useState('');
+  const [selectedSubject, setSelectedSubject] = useState<Academy['subject']>('국어');
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [memo, setMemo] = useState('');
+  
+  // UI 상태
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
-  const [showAcademyPicker, setShowAcademyPicker] = useState(false);
+  const [showSubjectPicker, setShowSubjectPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
-  useEffect(() => {
-    loadData();
-    initializeForm();
-  }, []);
+  // 요일 데이터
+  const weekdays: DayButton[] = [
+    { key: 'monday', label: '월', index: 1 },
+    { key: 'tuesday', label: '화', index: 2 },
+    { key: 'wednesday', label: '수', index: 3 },
+    { key: 'thursday', label: '목', index: 4 },
+    { key: 'friday', label: '금', index: 5 },
+    { key: 'saturday', label: '토', index: 6 },
+    { key: 'sunday', label: '일', index: 0 },
+  ];
 
-  const loadData = async () => {
-    try {
-      const [academyList, activeSchedule] = await Promise.all([
-        DatabaseService.getAcademies(),
-        DatabaseService.getActiveSchedule()
-      ]);
-      
-      setAcademies(academyList.filter(a => a.status === '진행'));
-      setSchedule(activeSchedule);
-    } catch (error) {
-      console.error('Error loading data:', error);
+  // 표시할 요일 (주말 포함 여부에 따라)
+  const availableDays = useMemo(() => {
+    if (!schedule) return weekdays.slice(0, 5); // 기본적으로 월-금
+    
+    if (schedule.show_weekend) {
+      return weekdays; // 일-토 모든 요일
+    } else {
+      return weekdays.slice(0, 5); // 월-금만
     }
-  };
+  }, [schedule]);
 
-  // 시간 옵션 생성 (스케줄 설정에 따라)
+  // 시간 옵션 생성
   const timeOptions = useMemo(() => {
     if (!schedule) return [];
     
@@ -85,71 +99,126 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   // 카테고리 옵션
   const categoryOptions = ['선택안함', '학교/기관', '학원', '공부', '휴식'];
 
-  // 학원 옵션 (이름과 과목 조합)
-  const academyOptions = useMemo(() => {
-    return academies.map(academy => `${academy.name} (${academy.subject})`);
-  }, [academies]);
+  // 과목 옵션
+  const subjectOptions: Academy['subject'][] = ['국어', '수학', '영어', '예체능', '사회과학', '기타'];
+
+  useEffect(() => {
+    loadSchedule();
+    initializeForm();
+  }, []);
+
+  const loadSchedule = async () => {
+    try {
+      const activeSchedule = await DatabaseService.getActiveSchedule();
+      setSchedule(activeSchedule);
+    } catch (error) {
+      console.error('Error loading schedule:', error);
+    }
+  };
 
   const initializeForm = () => {
+    // 현재 선택된 날짜의 요일 구하기
+    const currentDayIndex = moment(selectedDate).day();
+    const currentDayKey = weekdays.find(day => day.index === currentDayIndex)?.key;
+    
     if (event) {
       // 편집 모드
       setTitle(event.title);
-      setStartTime(moment(`${selectedDate} ${event.start_time}`).toDate());
-      setEndTime(moment(`${selectedDate} ${event.end_time}`).toDate());
+      setStartTime(event.start_time);
+      setEndTime(event.end_time);
       setCategory(event.category);
-      setAcademyId(event.academy_id);
+      setIsRecurring(event.is_recurring);
+      
+      // 편집 모드에서는 현재 요일만 선택
+      if (currentDayKey) {
+        setSelectedDays(new Set([currentDayKey]));
+      }
+      
+      // 학원 카테고리인 경우 추가 정보 설정
+      // 실제로는 academy_id로 학원 정보를 가져와야 함
+      if (event.category === '학원') {
+        setTitle(event.title); // 임시로 제목을 학원명으로 사용
+      }
     } else {
       // 새 일정 추가 모드
       resetForm();
-      const start = moment(`${selectedDate} ${selectedTime}`).toDate();
-      const end = moment(start).add(1, 'hour').toDate();
-      setStartTime(start);
-      setEndTime(end);
+      
+      // 현재 요일 선택
+      if (currentDayKey) {
+        setSelectedDays(new Set([currentDayKey]));
+      }
+      
+      // 기본 시간 설정
+      if (selectedTime) {
+        setStartTime(selectedTime);
+        const start = moment(selectedTime, 'HH:mm');
+        const interval = schedule?.time_unit === '30min' ? 30 : 60;
+        setEndTime(start.add(interval, 'minutes').format('HH:mm'));
+      }
     }
   };
 
   const resetForm = () => {
     setTitle('');
     setCategory('선택안함');
-    setAcademyId(undefined);
+    setAcademyName('');
+    setSelectedSubject('국어');
+    setIsRecurring(false);
+    setMemo('');
+  };
+
+  // 요일 선택/해제
+  const toggleDay = (dayKey: string) => {
+    const newSelectedDays = new Set(selectedDays);
+    if (newSelectedDays.has(dayKey)) {
+      newSelectedDays.delete(dayKey);
+    } else {
+      newSelectedDays.add(dayKey);
+    }
+    setSelectedDays(newSelectedDays);
+  };
+
+  // 카테고리 변경 시 처리
+  const handleCategoryChange = (newCategory: Event['category']) => {
+    setCategory(newCategory);
+    if (newCategory !== '학원') {
+      setAcademyName('');
+      setSelectedSubject('국어');
+    }
   };
 
   const handleSave = async () => {
-    if (!title.trim()) {
-      Alert.alert('오류', '일정 제목을 입력해주세요.');
+    // 유효성 검사
+    if (selectedDays.size === 0) {
+      Alert.alert('오류', '최소 하나의 요일을 선택해주세요.');
       return;
     }
 
-    if (startTime >= endTime) {
+    if (!startTime || !endTime) {
+      Alert.alert('오류', '시작 시간과 종료 시간을 설정해주세요.');
+      return;
+    }
+
+    if (moment(startTime, 'HH:mm').isSameOrAfter(moment(endTime, 'HH:mm'))) {
       Alert.alert('오류', '종료 시간은 시작 시간보다 늦어야 합니다.');
       return;
     }
 
-    if (category === '학원' && !academyId) {
-      Alert.alert('오류', '학원을 선택해주세요.');
+    const eventTitle = category === '학원' ? academyName : title;
+    if (!eventTitle.trim()) {
+      Alert.alert('오류', category === '학원' ? '학원명을 입력해주세요.' : '제목을 입력해주세요.');
       return;
     }
 
     setIsLoading(true);
 
     try {
-      const eventData: Omit<Event, 'id' | 'created_at' | 'updated_at'> = {
-        schedule_id: scheduleId,
-        title: title.trim(),
-        start_time: moment(startTime).format('HH:mm'),
-        end_time: moment(endTime).format('HH:mm'),
-        event_date: selectedDate,
-        category,
-        academy_id: category === '학원' ? academyId : undefined,
-        is_recurring: false,
-      };
-
-      if (event?.id) {
-        // 편집
-        await DatabaseService.updateEvent({ ...eventData, id: event.id });
+      if (isRecurring) {
+        // 반복 일정 처리
+        await saveRecurringEvent();
       } else {
-        // 새 일정 추가
-        await DatabaseService.createEvent(eventData);
+        // 단일 일정 처리
+        await saveSingleEvent();
       }
 
       onSave();
@@ -160,6 +229,98 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const saveSingleEvent = async () => {
+    const eventTitle = category === '학원' ? academyName : title;
+    const selectedDaysArray = Array.from(selectedDays);
+    
+    let academyId: number | undefined;
+    
+    // 학원 카테고리인 경우 학원 생성/조회
+    if (category === '학원' && academyName.trim()) {
+      academyId = await DatabaseService.createAcademyForRecurringEvent(
+        academyName.trim(),
+        selectedSubject
+      );
+    }
+    
+    const eventData = {
+      schedule_id: scheduleId,
+      title: eventTitle.trim(),
+      start_time: startTime,
+      end_time: endTime,
+      category,
+      academy_id: academyId,
+      is_recurring: false,
+    };
+
+    if (event?.id) {
+      // 편집 모드 - 단일 이벤트 업데이트
+      await DatabaseService.updateEvent({ 
+        ...eventData, 
+        id: event.id,
+        event_date: selectedDate
+      });
+    } else {
+      // 새 일정 추가
+      if (selectedDaysArray.length === 1) {
+        // 단일 요일 - 기존 방식
+        await DatabaseService.createEvent({
+          ...eventData,
+          event_date: selectedDate,
+        });
+      } else {
+        // 다중 요일 - 각 요일별로 이벤트 생성
+        await DatabaseService.createMultiDayEvents(
+          eventData,
+          selectedDaysArray,
+          selectedDate
+        );
+      }
+    }
+  };
+
+  const saveRecurringEvent = async () => {
+    // 반복 패턴 생성
+    const patternData = {
+      monday: selectedDays.has('monday'),
+      tuesday: selectedDays.has('tuesday'),
+      wednesday: selectedDays.has('wednesday'),
+      thursday: selectedDays.has('thursday'),
+      friday: selectedDays.has('friday'),
+      saturday: selectedDays.has('saturday'),
+      sunday: selectedDays.has('sunday'),
+      start_date: selectedDate,
+      end_date: undefined, // 무한 반복
+    };
+
+    const recurringPatternId = await DatabaseService.createRecurringPattern(patternData);
+    
+    const eventTitle = category === '학원' ? academyName : title;
+    let academyId: number | undefined;
+    
+    // 학원 카테고리인 경우 학원 생성/조회
+    if (category === '학원' && academyName.trim()) {
+      academyId = await DatabaseService.createAcademyForRecurringEvent(
+        academyName.trim(),
+        selectedSubject
+      );
+    }
+    
+    const eventData: Omit<Event, 'id' | 'created_at' | 'updated_at'> = {
+      schedule_id: scheduleId,
+      title: eventTitle.trim(),
+      start_time: startTime,
+      end_time: endTime,
+      event_date: undefined, // 반복 일정은 event_date가 null
+      category,
+      academy_id: academyId,
+      is_recurring: true,
+      recurring_group_id: recurringPatternId,
+    };
+
+    await DatabaseService.createEvent(eventData);
   };
 
   const handleDelete = async () => {
@@ -195,260 +356,225 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     navigation.goBack();
   };
 
-  const onStartTimeChange = (event: any, selectedTime?: Date) => {
-    setShowStartTimePicker(Platform.OS === 'ios');
-    if (selectedTime) {
-      setStartTime(selectedTime);
-      // 종료 시간이 시작 시간보다 빠르면 자동 조정
-      if (selectedTime >= endTime) {
-        const interval = schedule?.time_unit === '30min' ? 30 : 60;
-        setEndTime(moment(selectedTime).add(interval, 'minutes').toDate());
-      }
-    }
-  };
-
-  const onEndTimeChange = (event: any, selectedTime?: Date) => {
-    setShowEndTimePicker(Platform.OS === 'ios');
-    if (selectedTime) {
-      setEndTime(selectedTime);
-    }
-  };
-
-  // CustomPicker 핸들러들
-  const handleStartTimeConfirm = (value: string) => {
-    const newStartTime = moment(`${selectedDate} ${value}`).toDate();
-    setStartTime(newStartTime);
-    
-    // 종료 시간이 시작 시간보다 빠르면 자동 조정
-    if (newStartTime >= endTime) {
-      const interval = schedule?.time_unit === '30min' ? 30 : 60;
-      setEndTime(moment(newStartTime).add(interval, 'minutes').toDate());
-    }
-    
-    setShowStartTimePicker(false);
-  };
-
-  const handleEndTimeConfirm = (value: string) => {
-    const newEndTime = moment(`${selectedDate} ${value}`).toDate();
-    setEndTime(newEndTime);
-    setShowEndTimePicker(false);
-  };
-
-  const handleCategoryConfirm = (value: string) => {
-    setCategory(value as Event['category']);
-    if (value !== '학원') {
-      setAcademyId(undefined);
-    }
-    setShowCategoryPicker(false);
-  };
-
-  const handleAcademyConfirm = (value: string) => {
-    const selectedAcademy = academies.find(
-      academy => `${academy.name} (${academy.subject})` === value
-    );
-    setAcademyId(selectedAcademy?.id);
-    setShowAcademyPicker(false);
-  };
-
-  const getSelectedAcademyName = () => {
-    if (!academyId) return '학원을 선택하세요';
-    const academy = academies.find(a => a.id === academyId);
-    return academy ? `${academy.name} (${academy.subject})` : '학원을 선택하세요';
-  };
-
   return (
     <SafeAreaView style={styles.container}>
       {/* 헤더 */}
       <View style={styles.header}>
         <TouchableOpacity onPress={handleCancel} style={styles.headerButton}>
-          <Text style={styles.cancelText}>취소</Text>
+          <Ionicons name="close" size={24} color="#333" />
         </TouchableOpacity>
         
-        <Text style={styles.headerTitle}>
-          {event ? '일정 편집' : '새 일정'}
-        </Text>
+        <Text style={styles.headerTitle}>추가</Text>
         
         <View style={styles.headerRight}>
           {event && (
             <TouchableOpacity 
               onPress={handleDelete} 
-              style={[styles.headerButton, styles.deleteButton]}
+              style={styles.headerButton}
               disabled={isLoading}
             >
               <Ionicons name="trash-outline" size={20} color="#FF3B30" />
             </TouchableOpacity>
           )}
+          <TouchableOpacity onPress={handleSave} disabled={isLoading}>
+            <Ionicons name="chevron-down" size={24} color="#333" />
+          </TouchableOpacity>
         </View>
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* 일정 제목 */}
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>일정 제목</Text>
-          <TextInput
-            style={styles.textInput}
-            value={title}
-            onChangeText={setTitle}
-            placeholder="일정 제목을 입력하세요"
-            placeholderTextColor="#999"
-          />
-        </View>
-
-        {/* 날짜 */}
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>날짜</Text>
-          <View style={styles.dateContainer}>
-            <Text style={styles.dateText}>
-              {moment(selectedDate).format('YYYY년 M월 D일 dddd')}
-            </Text>
+        {/* 요일 선택 */}
+        <View style={styles.section}>
+          <View style={styles.dayButtons}>
+            {availableDays.map((day) => (
+              <TouchableOpacity
+                key={day.key}
+                style={[
+                  styles.dayButton,
+                  selectedDays.has(day.key) && styles.dayButtonSelected
+                ]}
+                onPress={() => toggleDay(day.key)}
+              >
+                <Text style={[
+                  styles.dayButtonText,
+                  selectedDays.has(day.key) && styles.dayButtonTextSelected
+                ]}>
+                  {day.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </View>
 
         {/* 시간 설정 */}
-        <View style={styles.timeSection}>
-          <View style={styles.timeRow}>
-            <View style={styles.timeGroup}>
-              <Text style={styles.label}>시작 시간</Text>
+        <View style={styles.section}>
+          <View style={styles.timeContainer}>
+            <Text style={styles.timeLabel}>시간</Text>
+            <View style={styles.timeButtons}>
               <TouchableOpacity
                 style={styles.timeButton}
                 onPress={() => setShowStartTimePicker(true)}
               >
                 <Text style={styles.timeButtonText}>
-                  {moment(startTime).format('HH:mm')}
+                  오전 {startTime || '시간 선택'}
                 </Text>
-                <Ionicons name="time-outline" size={20} color="#007AFF" />
               </TouchableOpacity>
-            </View>
-
-            <View style={styles.timeGroup}>
-              <Text style={styles.label}>종료 시간</Text>
+              <Text style={styles.timeSeparator}>~</Text>
               <TouchableOpacity
                 style={styles.timeButton}
                 onPress={() => setShowEndTimePicker(true)}
               >
                 <Text style={styles.timeButtonText}>
-                  {moment(endTime).format('HH:mm')}
+                  오전 {endTime || '시간 선택'}
                 </Text>
-                <Ionicons name="time-outline" size={20} color="#007AFF" />
               </TouchableOpacity>
             </View>
           </View>
-          
-          <Text style={styles.durationText}>
-            소요 시간: {moment.duration(moment(endTime).diff(moment(startTime))).asMinutes()}분
-          </Text>
         </View>
 
-        {/* 카테고리 */}
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>카테고리</Text>
-          <TouchableOpacity
-            style={styles.pickerButton}
-            onPress={() => setShowCategoryPicker(true)}
-          >
-            <Text style={styles.pickerButtonText}>{category}</Text>
-            <Ionicons name="chevron-down-outline" size={20} color="#666" />
-          </TouchableOpacity>
+        {/* 분류 */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>분류</Text>
+          <View style={styles.categoryContainer}>
+            {categoryOptions.map((cat) => (
+              <TouchableOpacity
+                key={cat}
+                style={[
+                  styles.categoryButton,
+                  category === cat && styles.categoryButtonSelected
+                ]}
+                onPress={() => handleCategoryChange(cat as Event['category'])}
+              >
+                <Text style={[
+                  styles.categoryButtonText,
+                  category === cat && styles.categoryButtonTextSelected
+                ]}>
+                  {cat}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
 
-        {/* 학원 선택 (카테고리가 '학원'일 때만) */}
+        {/* 학원 선택 시 추가 필드 */}
         {category === '학원' && (
-          <View style={styles.formGroup}>
-            <Text style={styles.label}>학원 선택</Text>
-            <TouchableOpacity
-              style={styles.pickerButton}
-              onPress={() => setShowAcademyPicker(true)}
-            >
-              <Text style={[
-                styles.pickerButtonText,
-                !academyId && styles.placeholderText
-              ]}>
-                {getSelectedAcademyName()}
-              </Text>
-              <Ionicons name="chevron-down-outline" size={20} color="#666" />
-            </TouchableOpacity>
-            
-            {academies.length === 0 && (
-              <Text style={styles.noAcademyText}>
-                등록된 학원이 없습니다. 학원관리에서 먼저 학원을 추가해주세요.
-              </Text>
-            )}
+          <>
+            {/* 제목 (학원명) */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>제목</Text>
+              <View style={styles.inputContainer}>
+                <Ionicons name="book-outline" size={20} color="#666" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.textInput}
+                  value={academyName}
+                  onChangeText={setAcademyName}
+                  placeholder="학원명 입력"
+                  placeholderTextColor="#999"
+                />
+              </View>
+            </View>
+
+            {/* 과목 */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>과목</Text>
+              <View style={styles.subjectContainer}>
+                {subjectOptions.map((subject) => (
+                  <TouchableOpacity
+                    key={subject}
+                    style={[
+                      styles.subjectButton,
+                      selectedSubject === subject && styles.subjectButtonSelected
+                    ]}
+                    onPress={() => setSelectedSubject(subject)}
+                  >
+                    <Text style={[
+                      styles.subjectButtonText,
+                      selectedSubject === subject && styles.subjectButtonTextSelected
+                    ]}>
+                      {subject}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </>
+        )}
+
+        {/* 일반 제목 (학원이 아닌 경우) */}
+        {category !== '학원' && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>제목</Text>
+            <View style={styles.inputContainer}>
+              <Ionicons name="create-outline" size={20} color="#666" style={styles.inputIcon} />
+              <TextInput
+                style={styles.textInput}
+                value={title}
+                onChangeText={setTitle}
+                placeholder="제목 입력"
+                placeholderTextColor="#999"
+              />
+            </View>
           </View>
         )}
+
+        {/* 반복 설정 */}
+        <View style={styles.section}>
+          <View style={styles.toggleContainer}>
+            <Text style={styles.toggleLabel}>선택한 요일 매주 반복</Text>
+            <Switch
+              value={isRecurring}
+              onValueChange={setIsRecurring}
+              trackColor={{ false: '#E5E5EA', true: '#34C759' }}
+              thumbColor={isRecurring ? '#fff' : '#fff'}
+            />
+          </View>
+        </View>
+
+        {/* 메모 */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>메모</Text>
+          <TextInput
+            style={styles.memoInput}
+            value={memo}
+            onChangeText={setMemo}
+            placeholder="메모 입력"
+            placeholderTextColor="#999"
+          />
+        </View>
       </ScrollView>
-
-      {/* 저장 버튼 */}
-      <View style={styles.footer}>
-        <TouchableOpacity 
-          style={[styles.saveButton, isLoading && styles.saveButtonDisabled]} 
-          onPress={handleSave}
-          disabled={isLoading}
-        >
-          <Text style={styles.saveButtonText}>
-            {isLoading ? '저장 중...' : '저장'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* 기본 시간 선택기 (fallback) */}
-      {showStartTimePicker && timeOptions.length === 0 && (
-        <DateTimePicker
-          value={startTime}
-          mode="time"
-          is24Hour={true}
-          display="default"
-          onChange={onStartTimeChange}
-        />
-      )}
-
-      {showEndTimePicker && timeOptions.length === 0 && (
-        <DateTimePicker
-          value={endTime}
-          mode="time"
-          is24Hour={true}
-          display="default"
-          onChange={onEndTimeChange}
-        />
-      )}
 
       {/* CustomPicker들 */}
       <CustomPicker
-        visible={showStartTimePicker && timeOptions.length > 0}
+        visible={showStartTimePicker}
         title="시작 시간"
-        selectedValue={moment(startTime).format('HH:mm')}
+        selectedValue={startTime}
         options={timeOptions}
         onCancel={() => setShowStartTimePicker(false)}
-        onConfirm={handleStartTimeConfirm}
+        onConfirm={(value) => {
+          setStartTime(value);
+          setShowStartTimePicker(false);
+          
+          // 종료 시간 자동 조정
+          const start = moment(value, 'HH:mm');
+          const interval = schedule?.time_unit === '30min' ? 30 : 60;
+          const newEndTime = start.add(interval, 'minutes').format('HH:mm');
+          if (timeOptions.includes(newEndTime)) {
+            setEndTime(newEndTime);
+          }
+        }}
       />
 
       <CustomPicker
-        visible={showEndTimePicker && timeOptions.length > 0}
+        visible={showEndTimePicker}
         title="종료 시간"
-        selectedValue={moment(endTime).format('HH:mm')}
+        selectedValue={endTime}
         options={timeOptions}
         onCancel={() => setShowEndTimePicker(false)}
-        onConfirm={handleEndTimeConfirm}
+        onConfirm={(value) => {
+          setEndTime(value);
+          setShowEndTimePicker(false);
+        }}
       />
-
-      <CustomPicker
-        visible={showCategoryPicker}
-        title="카테고리"
-        selectedValue={category}
-        options={categoryOptions}
-        onCancel={() => setShowCategoryPicker(false)}
-        onConfirm={handleCategoryConfirm}
-      />
-
-      {category === '학원' && academies.length > 0 && (
-        <CustomPicker
-          visible={showAcademyPicker}
-          title="학원 선택"
-          selectedValue={getSelectedAcademyName()}
-          options={academyOptions}
-          onCancel={() => setShowAcademyPicker(false)}
-          onConfirm={handleAcademyConfirm}
-        />
-      )}
     </SafeAreaView>
   );
 };
@@ -469,19 +595,12 @@ const styles = StyleSheet.create({
     borderBottomColor: '#f0f0f0',
   },
   headerButton: {
-    paddingHorizontal: 5,
-    paddingVertical: 5,
+    padding: 5,
   },
   headerRight: {
-    width: 50,
-    alignItems: 'flex-end',
-  },
-  cancelText: {
-    fontSize: 16,
-    color: '#007AFF',
-  },
-  deleteButton: {
-    padding: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   headerTitle: {
     fontSize: 18,
@@ -492,109 +611,169 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 20,
   },
-  formGroup: {
+  section: {
     marginBottom: 25,
   },
-  label: {
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 12,
+  },
+  // 요일 버튼
+  dayButtons: {
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+  },
+  dayButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E5E5EA',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dayButtonSelected: {
+    backgroundColor: '#007AFF',
+  },
+  dayButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+  },
+  dayButtonTextSelected: {
+    color: '#fff',
+  },
+  // 시간 설정
+  timeContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+  },
+  timeLabel: {
     fontSize: 16,
     fontWeight: '500',
     color: '#333',
-    marginBottom: 10,
+    marginBottom: 12,
   },
-  textInput: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 12,
-    padding: 15,
-    fontSize: 16,
-    backgroundColor: '#fff',
-  },
-  dateContainer: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 15,
-    borderWidth: 1,
-    borderColor: '#ddd',
-  },
-  dateText: {
-    fontSize: 16,
-    color: '#333',
-  },
-  timeSection: {
-    marginBottom: 25,
-  },
-  timeRow: {
+  timeButtons: {
     flexDirection: 'row',
-    gap: 15,
-    marginBottom: 10,
-  },
-  timeGroup: {
-    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
   timeButton: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 12,
-    padding: 15,
-    backgroundColor: '#fff',
+    borderColor: '#E5E5EA',
   },
   timeButtonText: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#333',
     fontWeight: '500',
   },
-  durationText: {
-    fontSize: 14,
+  timeSeparator: {
+    fontSize: 16,
     color: '#666',
-    textAlign: 'center',
-    fontStyle: 'italic',
+    marginHorizontal: 8,
   },
-  pickerButton: {
+  // 카테고리
+  categoryContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 12,
-    padding: 15,
-    backgroundColor: '#fff',
+    flexWrap: 'wrap',
+    gap: 8,
   },
-  pickerButtonText: {
+  categoryButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#E5E5EA',
+    borderRadius: 20,
+  },
+  categoryButtonSelected: {
+    backgroundColor: '#007AFF',
+  },
+  categoryButtonText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#666',
+  },
+  categoryButtonTextSelected: {
+    color: '#fff',
+  },
+  // 과목
+  subjectContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  subjectButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#E5E5EA',
+    borderRadius: 20,
+  },
+  subjectButtonSelected: {
+    backgroundColor: '#007AFF',
+  },
+  subjectButtonText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#666',
+  },
+  subjectButtonTextSelected: {
+    color: '#fff',
+  },
+  // 입력 필드
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  inputIcon: {
+    marginRight: 12,
+  },
+  textInput: {
+    flex: 1,
     fontSize: 16,
     color: '#333',
   },
-  placeholderText: {
-    color: '#999',
-  },
-  noAcademyText: {
-    fontSize: 14,
-    color: '#FF9500',
-    marginTop: 8,
-    textAlign: 'center',
-    fontStyle: 'italic',
-  },
-  footer: {
-    padding: 20,
+  memoInput: {
     backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-  },
-  saveButton: {
-    backgroundColor: '#007AFF',
-    padding: 18,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#333',
+  },
+  // 토글
+  toggleContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
-  saveButtonDisabled: {
-    backgroundColor: '#ccc',
-  },
-  saveButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
+  toggleLabel: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: '500',
   },
 });
 

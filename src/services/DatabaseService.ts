@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import moment from 'moment';
 
 export interface Schedule {
   id: number;
@@ -436,6 +437,268 @@ class DatabaseService {
       await db.runAsync('UPDATE events SET del_yn = 1 WHERE id = ?', [id]);
     } catch (error) {
       console.error('Error deleting event:', error);
+      throw error;
+    }
+  }
+
+  // 다중 요일 일정 생성 (반복 없음)
+  async createMultiDayEvents(
+    eventData: Omit<Event, 'id' | 'created_at' | 'updated_at' | 'event_date'>,
+    selectedDays: string[],
+    baseDate: string
+  ): Promise<number[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      const eventIds: number[] = [];
+      
+      // 선택된 요일들에 대해 각각 이벤트 생성
+      for (const dayKey of selectedDays) {
+        const eventDate = this.getNextDateForDay(baseDate, dayKey);
+        
+        const result = await db.runAsync(
+          `INSERT INTO events (
+            schedule_id, title, start_time, end_time, event_date,
+            category, academy_id, is_recurring, recurring_group_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            eventData.schedule_id,
+            eventData.title,
+            eventData.start_time,
+            eventData.end_time,
+            eventDate,
+            eventData.category,
+            eventData.academy_id ?? null,
+            false, // 다중 요일이지만 반복은 아님
+            null
+          ]
+        );
+        
+        eventIds.push(result.lastInsertRowId);
+      }
+      
+      return eventIds;
+    } catch (error) {
+      console.error('Error creating multi-day events:', error);
+      throw error;
+    }
+  }
+
+  // 요일 키를 기반으로 다음 해당 요일의 날짜 계산
+  private getNextDateForDay(baseDate: string, dayKey: string): string {
+    const dayMap = {
+      'sunday': 0,
+      'monday': 1,
+      'tuesday': 2,
+      'wednesday': 3,
+      'thursday': 4,
+      'friday': 5,
+      'saturday': 6
+    };
+    
+    const targetDay = dayMap[dayKey as keyof typeof dayMap];
+    const base = moment(baseDate);
+    const currentDay = base.day();
+    
+    // 현재 주에서 해당 요일까지의 차이 계산
+    let daysToAdd = targetDay - currentDay;
+    if (daysToAdd < 0) {
+      daysToAdd += 7; // 다음 주의 해당 요일
+    }
+    
+    return base.add(daysToAdd, 'days').format('YYYY-MM-DD');
+  }
+
+  // 반복 일정과 연결된 학원 정보 저장 (학원 카테고리인 경우)
+  async createAcademyForRecurringEvent(
+    academyName: string,
+    subject: Academy['subject']
+  ): Promise<number> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 동일한 이름과 과목의 학원이 있는지 확인
+      const existingAcademy = await db.getFirstAsync<Academy>(
+        'SELECT * FROM academies WHERE name = ? AND subject = ? AND del_yn = 0',
+        [academyName, subject]
+      );
+      
+      if (existingAcademy) {
+        return existingAcademy.id;
+      }
+      
+      // 새 학원 생성
+      const result = await db.runAsync(
+        `INSERT INTO academies (name, subject, status) VALUES (?, ?, ?)`,
+        [academyName, subject, '진행']
+      );
+      
+      return result.lastInsertRowId;
+    } catch (error) {
+      console.error('Error creating academy for recurring event:', error);
+      throw error;
+    }
+  }
+
+  // 개선된 이벤트 조회 (반복 일정 확장 포함)
+  async getEventsWithRecurring(
+    scheduleId: number, 
+    startDate: string, 
+    endDate: string
+  ): Promise<Event[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 1. 일반 일정 조회
+      const regularEvents = await db.getAllAsync<Event>(
+        `SELECT e.*, a.name as academy_name, a.subject as academy_subject
+        FROM events e
+        LEFT JOIN academies a ON e.academy_id = a.id
+        WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 0
+        AND e.event_date BETWEEN ? AND ?
+        ORDER BY e.start_time`,
+        [scheduleId, startDate, endDate]
+      );
+      
+      // 2. 반복 일정 조회 및 확장
+      const recurringEvents = await db.getAllAsync<any>(
+        `SELECT e.*, a.name as academy_name, a.subject as academy_subject, rp.*
+        FROM events e
+        LEFT JOIN academies a ON e.academy_id = a.id
+        LEFT JOIN recurring_patterns rp ON e.recurring_group_id = rp.id
+        WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 1
+        AND rp.del_yn = 0
+        AND rp.start_date <= ?
+        AND (rp.end_date IS NULL OR rp.end_date >= ?)`,
+        [scheduleId, endDate, startDate]
+      );
+      
+      // 3. 반복 일정을 날짜별로 확장
+      const expandedRecurringEvents: Event[] = [];
+      for (const recurringEvent of recurringEvents) {
+        const dates = this.generateRecurringDates(recurringEvent, startDate, endDate);
+        for (const date of dates) {
+          expandedRecurringEvents.push({
+            ...recurringEvent,
+            event_date: date,
+            id: `${recurringEvent.id}_${date}` as any, // 임시 ID
+          });
+        }
+      }
+      
+      return [...regularEvents, ...expandedRecurringEvents];
+    } catch (error) {
+      console.error('Error getting events with recurring:', error);
+      throw error;
+    }
+  }
+
+  // 반복 일정의 날짜들 생성
+  private generateRecurringDates(
+    recurringEvent: any,
+    startDate: string,
+    endDate: string
+  ): string[] {
+    const dates: string[] = [];
+    const start = moment(startDate);
+    const end = moment(endDate);
+    const patternStart = moment(recurringEvent.start_date);
+    const patternEnd = recurringEvent.end_date ? moment(recurringEvent.end_date) : null;
+    
+    // 시작일을 조정 (패턴 시작일 이후부터)
+    let current = moment.max(start, patternStart);
+    
+    while (current.isSameOrBefore(end)) {
+      const dayOfWeek = current.day();
+      let shouldInclude = false;
+      
+      // 요일 확인
+      switch (dayOfWeek) {
+        case 0: shouldInclude = recurringEvent.sunday; break;
+        case 1: shouldInclude = recurringEvent.monday; break;
+        case 2: shouldInclude = recurringEvent.tuesday; break;
+        case 3: shouldInclude = recurringEvent.wednesday; break;
+        case 4: shouldInclude = recurringEvent.thursday; break;
+        case 5: shouldInclude = recurringEvent.friday; break;
+        case 6: shouldInclude = recurringEvent.saturday; break;
+      }
+      
+      // 패턴 종료일 확인
+      if (patternEnd && current.isAfter(patternEnd)) {
+        shouldInclude = false;
+      }
+      
+      if (shouldInclude) {
+        dates.push(current.format('YYYY-MM-DD'));
+      }
+      
+      current.add(1, 'day');
+    }
+    
+    return dates;
+  }
+
+  // 반복 패턴 업데이트
+  async updateRecurringPattern(pattern: RecurringPattern): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      await db.runAsync(
+        `UPDATE recurring_patterns SET 
+        monday = ?, tuesday = ?, wednesday = ?, thursday = ?,
+        friday = ?, saturday = ?, sunday = ?,
+        start_date = ?, end_date = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+        [
+          pattern.monday ? 1 : 0,
+          pattern.tuesday ? 1 : 0,
+          pattern.wednesday ? 1 : 0,
+          pattern.thursday ? 1 : 0,
+          pattern.friday ? 1 : 0,
+          pattern.saturday ? 1 : 0,
+          pattern.sunday ? 1 : 0,
+          pattern.start_date,
+          pattern.end_date ?? null,
+          pattern.id
+        ]
+      );
+    } catch (error) {
+      console.error('Error updating recurring pattern:', error);
+      throw error;
+    }
+  }
+
+  // 반복 일정 삭제 (패턴과 연결된 모든 이벤트 삭제)
+  async deleteRecurringEvent(eventId: number): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 이벤트 정보 조회
+      const event = await db.getFirstAsync<Event>(
+        'SELECT * FROM events WHERE id = ? AND del_yn = 0',
+        [eventId]
+      );
+      
+      if (!event) {
+        throw new Error('Event not found');
+      }
+      
+      if (event.is_recurring && event.recurring_group_id) {
+        // 반복 패턴 삭제
+        await db.runAsync(
+          'UPDATE recurring_patterns SET del_yn = 1 WHERE id = ?',
+          [event.recurring_group_id]
+        );
+        
+        // 연결된 모든 이벤트 삭제
+        await db.runAsync(
+          'UPDATE events SET del_yn = 1 WHERE recurring_group_id = ?',
+          [event.recurring_group_id]
+        );
+      } else {
+        // 단일 이벤트 삭제
+        await db.runAsync('UPDATE events SET del_yn = 1 WHERE id = ?', [eventId]);
+      }
+    } catch (error) {
+      console.error('Error deleting recurring event:', error);
       throw error;
     }
   }
