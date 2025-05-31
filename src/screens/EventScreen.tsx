@@ -282,6 +282,12 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   const saveRecurringEvent = async () => {
+    console.log('Saving recurring event...');
+    console.log('Selected days:', Array.from(selectedDays));
+    console.log('Category:', category);
+    console.log('Academy name:', academyName);
+    console.log('Title:', title);
+    
     // 반복 패턴 생성
     const patternData = {
       monday: selectedDays.has('monday'),
@@ -295,17 +301,22 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       end_date: undefined, // 무한 반복
     };
 
+    console.log('Pattern data:', patternData);
+
     const recurringPatternId = await DatabaseService.createRecurringPattern(patternData);
+    console.log('Created pattern with ID:', recurringPatternId);
     
     const eventTitle = category === '학원' ? academyName : title;
     let academyId: number | undefined;
     
     // 학원 카테고리인 경우 학원 생성/조회
     if (category === '학원' && academyName.trim()) {
+      console.log('Creating academy for recurring event...');
       academyId = await DatabaseService.createAcademyForRecurringEvent(
         academyName.trim(),
         selectedSubject
       );
+      console.log('Academy ID:', academyId);
     }
     
     const eventData: Omit<Event, 'id' | 'created_at' | 'updated_at'> = {
@@ -320,7 +331,10 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       recurring_group_id: recurringPatternId,
     };
 
-    await DatabaseService.createEvent(eventData);
+    console.log('Event data:', eventData);
+    
+    const eventId = await DatabaseService.createEvent(eventData);
+    console.log('Created recurring event with ID:', eventId);
   };
 
   const handleDelete = async () => {

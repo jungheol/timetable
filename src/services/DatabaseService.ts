@@ -383,6 +383,9 @@ class DatabaseService {
   async createEvent(event: Omit<Event, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
     try {
       const db = await this.ensureDbConnection();
+      
+      console.log('Creating event:', event); // 디버깅용
+      
       const result = await db.runAsync(
         `INSERT INTO events (
           schedule_id, title, start_time, end_time, event_date,
@@ -400,6 +403,8 @@ class DatabaseService {
           event.recurring_group_id ?? null
         ]
       );
+      
+      console.log('Event created with ID:', result.lastInsertRowId); // 디버깅용
       return result.lastInsertRowId;
     } catch (error) {
       console.error('Error creating event:', error);
@@ -516,6 +521,8 @@ class DatabaseService {
     try {
       const db = await this.ensureDbConnection();
       
+      console.log('Creating/finding academy:', academyName, subject); // 디버깅용
+      
       // 동일한 이름과 과목의 학원이 있는지 확인
       const existingAcademy = await db.getFirstAsync<Academy>(
         'SELECT * FROM academies WHERE name = ? AND subject = ? AND del_yn = 0',
@@ -523,15 +530,17 @@ class DatabaseService {
       );
       
       if (existingAcademy) {
+        console.log('Found existing academy:', existingAcademy.id); // 디버깅용
         return existingAcademy.id;
       }
       
       // 새 학원 생성
       const result = await db.runAsync(
-        `INSERT INTO academies (name, subject, status) VALUES (?, ?, ?)`,
-        [academyName, subject, '진행']
+        `INSERT INTO academies (name, subject, status, del_yn) VALUES (?, ?, ?, ?)`,
+        [academyName, subject, '진행', 0]
       );
       
+      console.log('Created new academy with ID:', result.lastInsertRowId); // 디버깅용
       return result.lastInsertRowId;
     } catch (error) {
       console.error('Error creating academy for recurring event:', error);
@@ -548,44 +557,73 @@ class DatabaseService {
     try {
       const db = await this.ensureDbConnection();
       
+      console.log('Getting events for period:', startDate, 'to', endDate); // 디버깅용
+      
       // 1. 일반 일정 조회
       const regularEvents = await db.getAllAsync<Event>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject
-        FROM events e
-        LEFT JOIN academies a ON e.academy_id = a.id
-        WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 0
-        AND e.event_date BETWEEN ? AND ?
-        ORDER BY e.start_time`,
+         FROM events e
+         LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+         WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 0
+         AND e.event_date BETWEEN ? AND ?
+         ORDER BY e.start_time`,
         [scheduleId, startDate, endDate]
       );
       
-      // 2. 반복 일정 조회 및 확장
+      console.log('Regular events found:', regularEvents.length); // 디버깅용
+      
+      // 2. 반복 일정 조회
       const recurringEvents = await db.getAllAsync<any>(
-        `SELECT e.*, a.name as academy_name, a.subject as academy_subject, rp.*
-        FROM events e
-        LEFT JOIN academies a ON e.academy_id = a.id
-        LEFT JOIN recurring_patterns rp ON e.recurring_group_id = rp.id
-        WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 1
-        AND rp.del_yn = 0
-        AND rp.start_date <= ?
-        AND (rp.end_date IS NULL OR rp.end_date >= ?)`,
+        `SELECT e.*, a.name as academy_name, a.subject as academy_subject, 
+                rp.monday, rp.tuesday, rp.wednesday, rp.thursday, 
+                rp.friday, rp.saturday, rp.sunday, 
+                rp.start_date, rp.end_date
+         FROM events e
+         LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+         INNER JOIN recurring_patterns rp ON e.recurring_group_id = rp.id
+         WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 1
+         AND rp.del_yn = 0
+         AND rp.start_date <= ?
+         AND (rp.end_date IS NULL OR rp.end_date >= ?)`,
         [scheduleId, endDate, startDate]
       );
+      
+      console.log('Recurring event patterns found:', recurringEvents.length); // 디버깅용
       
       // 3. 반복 일정을 날짜별로 확장
       const expandedRecurringEvents: Event[] = [];
       for (const recurringEvent of recurringEvents) {
         const dates = this.generateRecurringDates(recurringEvent, startDate, endDate);
+        console.log(`Expanding recurring event "${recurringEvent.title}" for dates:`, dates); // 디버깅용
+        
         for (const date of dates) {
           expandedRecurringEvents.push({
-            ...recurringEvent,
+            id: recurringEvent.id,
+            schedule_id: recurringEvent.schedule_id,
+            title: recurringEvent.title,
+            start_time: recurringEvent.start_time,
+            end_time: recurringEvent.end_time,
             event_date: date,
-            id: `${recurringEvent.id}_${date}` as any, // 임시 ID
-          });
+            category: recurringEvent.category,
+            academy_id: recurringEvent.academy_id,
+            is_recurring: true,
+            recurring_group_id: recurringEvent.recurring_group_id,
+            created_at: recurringEvent.created_at,
+            updated_at: recurringEvent.updated_at,
+            del_yn: recurringEvent.del_yn,
+            // 추가 정보
+            academy_name: recurringEvent.academy_name,
+            academy_subject: recurringEvent.academy_subject,
+          } as any);
         }
       }
       
-      return [...regularEvents, ...expandedRecurringEvents];
+      console.log('Expanded recurring events:', expandedRecurringEvents.length); // 디버깅용
+      
+      const allEvents = [...regularEvents, ...expandedRecurringEvents];
+      console.log('Total events returned:', allEvents.length); // 디버깅용
+      
+      return allEvents;
     } catch (error) {
       console.error('Error getting events with recurring:', error);
       throw error;
@@ -599,39 +637,61 @@ class DatabaseService {
     endDate: string
   ): string[] {
     const dates: string[] = [];
-    const start = moment(startDate);
-    const end = moment(endDate);
-    const patternStart = moment(recurringEvent.start_date);
-    const patternEnd = recurringEvent.end_date ? moment(recurringEvent.end_date) : null;
     
-    // 시작일을 조정 (패턴 시작일 이후부터)
-    let current = moment.max(start, patternStart);
-    
-    while (current.isSameOrBefore(end)) {
-      const dayOfWeek = current.day();
-      let shouldInclude = false;
+    try {
+      // moment가 import 되어 있지 않을 수 있으므로 Date 객체 사용
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      const patternStart = new Date(recurringEvent.start_date);
+      const patternEnd = recurringEvent.end_date ? new Date(recurringEvent.end_date) : null;
       
-      // 요일 확인
-      switch (dayOfWeek) {
-        case 0: shouldInclude = recurringEvent.sunday; break;
-        case 1: shouldInclude = recurringEvent.monday; break;
-        case 2: shouldInclude = recurringEvent.tuesday; break;
-        case 3: shouldInclude = recurringEvent.wednesday; break;
-        case 4: shouldInclude = recurringEvent.thursday; break;
-        case 5: shouldInclude = recurringEvent.friday; break;
-        case 6: shouldInclude = recurringEvent.saturday; break;
+      // 시작일을 조정 (패턴 시작일 이후부터)
+      let current = new Date(Math.max(start.getTime(), patternStart.getTime()));
+      
+      console.log('Generating dates from', current.toISOString().split('T')[0], 'to', end.toISOString().split('T')[0]); // 디버깅용
+      console.log('Pattern days:', {
+        sunday: recurringEvent.sunday,
+        monday: recurringEvent.monday,
+        tuesday: recurringEvent.tuesday,
+        wednesday: recurringEvent.wednesday,
+        thursday: recurringEvent.thursday,
+        friday: recurringEvent.friday,
+        saturday: recurringEvent.saturday
+      }); // 디버깅용
+      
+      while (current <= end) {
+        const dayOfWeek = current.getDay(); // 0=일요일, 1=월요일, ..., 6=토요일
+        let shouldInclude = false;
+        
+        // 요일 확인
+        switch (dayOfWeek) {
+          case 0: shouldInclude = Boolean(recurringEvent.sunday); break;
+          case 1: shouldInclude = Boolean(recurringEvent.monday); break;
+          case 2: shouldInclude = Boolean(recurringEvent.tuesday); break;
+          case 3: shouldInclude = Boolean(recurringEvent.wednesday); break;
+          case 4: shouldInclude = Boolean(recurringEvent.thursday); break;
+          case 5: shouldInclude = Boolean(recurringEvent.friday); break;
+          case 6: shouldInclude = Boolean(recurringEvent.saturday); break;
+        }
+        
+        // 패턴 종료일 확인
+        if (patternEnd && current > patternEnd) {
+          shouldInclude = false;
+        }
+        
+        if (shouldInclude) {
+          const dateStr = current.toISOString().split('T')[0]; // YYYY-MM-DD 형식
+          dates.push(dateStr);
+        }
+        
+        // 다음 날로 이동
+        current.setDate(current.getDate() + 1);
       }
       
-      // 패턴 종료일 확인
-      if (patternEnd && current.isAfter(patternEnd)) {
-        shouldInclude = false;
-      }
+      console.log('Generated dates:', dates); // 디버깅용
       
-      if (shouldInclude) {
-        dates.push(current.format('YYYY-MM-DD'));
-      }
-      
-      current.add(1, 'day');
+    } catch (error) {
+      console.error('Error generating recurring dates:', error);
     }
     
     return dates;
@@ -671,6 +731,8 @@ class DatabaseService {
     try {
       const db = await this.ensureDbConnection();
       
+      console.log('Deleting recurring event:', eventId); // 디버깅용
+      
       // 이벤트 정보 조회
       const event = await db.getFirstAsync<Event>(
         'SELECT * FROM events WHERE id = ? AND del_yn = 0',
@@ -681,7 +743,11 @@ class DatabaseService {
         throw new Error('Event not found');
       }
       
+      console.log('Found event to delete:', event); // 디버깅용
+      
       if (event.is_recurring && event.recurring_group_id) {
+        console.log('Deleting recurring pattern:', event.recurring_group_id); // 디버깅용
+        
         // 반복 패턴 삭제
         await db.runAsync(
           'UPDATE recurring_patterns SET del_yn = 1 WHERE id = ?',
@@ -693,9 +759,12 @@ class DatabaseService {
           'UPDATE events SET del_yn = 1 WHERE recurring_group_id = ?',
           [event.recurring_group_id]
         );
+        
+        console.log('Recurring event and pattern deleted'); // 디버깅용
       } else {
         // 단일 이벤트 삭제
         await db.runAsync('UPDATE events SET del_yn = 1 WHERE id = ?', [eventId]);
+        console.log('Single event deleted'); // 디버깅용
       }
     } catch (error) {
       console.error('Error deleting recurring event:', error);
@@ -707,6 +776,9 @@ class DatabaseService {
   async createRecurringPattern(pattern: Omit<RecurringPattern, 'id' | 'created_at'>): Promise<number> {
     try {
       const db = await this.ensureDbConnection();
+      
+      console.log('Creating recurring pattern:', pattern); // 디버깅용
+      
       const result = await db.runAsync(
         `INSERT INTO recurring_patterns (
           monday, tuesday, wednesday, thursday, friday, saturday, sunday,
@@ -724,10 +796,78 @@ class DatabaseService {
           pattern.end_date ?? null
         ]
       );
+      
+      console.log('Recurring pattern created with ID:', result.lastInsertRowId); // 디버깅용
       return result.lastInsertRowId;
     } catch (error) {
       console.error('Error creating recurring pattern:', error);
       throw error;
+    }
+  }
+
+  async testRecurringRetrieval(scheduleId: number): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      console.log('🧪 === Testing Recurring Event Retrieval ===');
+      
+      // 1. 저장된 반복 이벤트 확인
+      const recurringEvents = await db.getAllAsync(`
+        SELECT * FROM events WHERE is_recurring = 1 AND del_yn = 0
+      `);
+      console.log('🧪 Stored recurring events:', recurringEvents);
+      
+      // 2. 반복 패턴 확인
+      const patterns = await db.getAllAsync(`
+        SELECT * FROM recurring_patterns WHERE del_yn = 0
+      `);
+      console.log('🧪 Stored patterns:', patterns);
+      
+      // 3. 조인된 데이터 확인
+      const joinedData = await db.getAllAsync(`
+        SELECT e.*, 
+               rp.monday, rp.tuesday, rp.wednesday, rp.thursday, 
+               rp.friday, rp.saturday, rp.sunday, 
+               rp.start_date, rp.end_date
+        FROM events e
+        INNER JOIN recurring_patterns rp ON e.recurring_group_id = rp.id
+        WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 1 AND rp.del_yn = 0
+      `, [scheduleId]);
+      console.log('🧪 Joined recurring data:', joinedData);
+      
+      // 4. 특정 기간으로 이벤트 조회 테스트
+      const testStartDate = '2025-05-26'; // 월요일
+      const testEndDate = '2025-06-01';   // 일요일
+      
+      console.log(`🧪 Testing retrieval for period: ${testStartDate} to ${testEndDate}`);
+      
+      const retrievedEvents = await this.getEventsWithRecurring(
+        scheduleId, 
+        testStartDate, 
+        testEndDate
+      );
+      console.log('🧪 Retrieved events with recurring:', retrievedEvents);
+      
+      // 5. 현재 주 테스트
+      const now = new Date();
+      const currentWeekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+      const currentWeekEnd = new Date(currentWeekStart);
+      currentWeekEnd.setDate(currentWeekStart.getDate() + 6);
+      
+      const currentStartStr = currentWeekStart.toISOString().split('T')[0];
+      const currentEndStr = currentWeekEnd.toISOString().split('T')[0];
+      
+      console.log(`🧪 Testing current week: ${currentStartStr} to ${currentEndStr}`);
+      
+      const currentWeekEvents = await this.getEventsWithRecurring(
+        scheduleId,
+        currentStartStr,
+        currentEndStr
+      );
+      console.log('🧪 Current week events:', currentWeekEvents);
+      
+    } catch (error) {
+      console.error('🧪 Test retrieval error:', error);
     }
   }
 }

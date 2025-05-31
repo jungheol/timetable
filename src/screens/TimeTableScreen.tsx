@@ -81,12 +81,31 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       const startDate = weekDays[0].format('YYYY-MM-DD');
       const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
       
-      const weekEvents = await DatabaseService.getEvents(schedule.id!, startDate, endDate);
+      console.log('🔍 TimeTable: Loading events for period:', startDate, 'to', endDate);
+      
+      // ✅ 반복 일정 지원하는 메서드로 변경
+      const weekEvents = await DatabaseService.getEventsWithRecurring(schedule.id!, startDate, endDate);
+      
+      console.log('🔍 TimeTable: Events loaded:', weekEvents.length);
+      console.log('🔍 TimeTable: Events details:', weekEvents);
+      
       setEvents(weekEvents);
     } catch (error) {
       console.error('Error loading events:', error);
     }
   }, [schedule, currentWeek]);
+
+  // 🧪 디버깅용 테스트 메서드 추가
+  const testRecurringEvents = useCallback(async () => {
+    if (!schedule) return;
+    
+    try {
+      console.log('🧪 Testing recurring events...');
+      await DatabaseService.testRecurringRetrieval(schedule.id!);
+    } catch (error) {
+      console.error('Test error:', error);
+    }
+  }, [schedule]);
 
   const getWeekDays = () => {
     const startOfWeek = schedule?.show_weekend
@@ -124,18 +143,36 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
 
   const getEventsForDateAndTime = (date: moment.Moment, time: string) => {
     const dateStr = date.format('YYYY-MM-DD');
-    return events.filter(event => 
-      event.event_date === dateStr && 
-      event.start_time <= time && 
-      event.end_time > time
-    );
+    const filteredEvents = events.filter(event => {
+      // 날짜 확인
+      const eventDateMatches = event.event_date === dateStr;
+      
+      // 시간 확인 - 시작 시간이 현재 시간보다 작거나 같고, 종료 시간이 현재 시간보다 큰 경우
+      const eventStartTime = moment(event.start_time, 'HH:mm');
+      const eventEndTime = moment(event.end_time, 'HH:mm');
+      const currentTime = moment(time, 'HH:mm');
+      
+      const timeMatches = eventStartTime.isSameOrBefore(currentTime) && eventEndTime.isAfter(currentTime);
+      
+      return eventDateMatches && timeMatches;
+    });
+    
+    // 디버깅용 로그 (필요시 주석 해제)
+    // if (filteredEvents.length > 0) {
+    //   console.log(`📅 ${dateStr} ${time}:`, filteredEvents.map(e => e.title));
+    // }
+    
+    return filteredEvents;
   };
 
   const handleCellPress = (date: moment.Moment, time: string) => {
     const dateStr = date.format('YYYY-MM-DD');
     const cellEvents = getEventsForDateAndTime(date, time);
     
+    // 반복 일정의 경우 임시 ID를 가질 수 있으므로 첫 번째 이벤트 선택
     const selectedEvent = cellEvents.length > 0 ? cellEvents[0] : null;
+    
+    console.log('🖱️ Cell pressed:', dateStr, time, selectedEvent?.title || 'No event');
     
     // EventScreen으로 네비게이션
     navigation.navigate('EventScreen', {
@@ -210,8 +247,8 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
           <Ionicons name="create-outline" size={24} color="#007AFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>시간표</Text>
-        <TouchableOpacity>
-          <Ionicons name="add-circle-outline" size={24} color="#007AFF" />
+        <TouchableOpacity onPress={testRecurringEvents}>
+          <Ionicons name="bug-outline" size={24} color="#FF9500" />
         </TouchableOpacity>
       </View>
 
@@ -233,6 +270,16 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
         <TouchableOpacity onPress={() => navigateWeek('next')}>
           <Ionicons name="chevron-forward" size={24} color="#007AFF" />
         </TouchableOpacity>
+      </View>
+
+      {/* 이벤트 요약 정보 표시 (디버깅용) */}
+      <View style={styles.debugInfo}>
+        <Text style={styles.debugText}>
+          총 {events.length}개 일정 
+          {events.filter(e => e.is_recurring).length > 0 && 
+            ` (반복: ${events.filter(e => e.is_recurring).length}개)`
+          }
+        </Text>
       </View>
 
       {/* 날짜 헤더 */}
@@ -272,7 +319,7 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
               >
                 {getEventsForDateAndTime(day, time).map((event, eventIndex) => (
                   <View
-                    key={eventIndex}
+                    key={`${event.id}-${eventIndex}`}
                     style={[
                       styles.eventBlock,
                       getEventStyle(event.category),
@@ -280,6 +327,9 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
                   >
                     <Text style={styles.eventTitle} numberOfLines={1}>
                       {event.title}
+                      {event.is_recurring && (
+                        <Text style={styles.recurringIndicator}> ↻</Text>
+                      )}
                     </Text>
                   </View>
                 ))}
@@ -336,6 +386,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 2,
+  },
+  debugInfo: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    backgroundColor: '#fff3cd',
+    borderBottomWidth: 1,
+    borderBottomColor: '#ffeaa7',
+  },
+  debugText: {
+    fontSize: 12,
+    color: '#856404',
+    textAlign: 'center',
   },
   dateHeader: {
     flexDirection: 'row',
@@ -425,6 +487,10 @@ const styles = StyleSheet.create({
   eventTitle: {
     fontSize: 10,
     fontWeight: '500',
+  },
+  recurringIndicator: {
+    fontSize: 8,
+    opacity: 0.8,
   },
 });
 
