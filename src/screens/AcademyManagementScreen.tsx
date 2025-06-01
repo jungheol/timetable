@@ -12,14 +12,22 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import DatabaseService, { Academy } from '../services/DatabaseService';
+import { RootStackParamList } from '../../App';
 
 interface AcademyItem extends Academy {
   academy_name?: string;
   academy_subject?: string;
 }
 
-const AcademyManagementScreen: React.FC = () => {
+type AcademyManagementScreenNavigationProp = StackNavigationProp<RootStackParamList, 'AcademyManagementScreen'>;
+
+interface Props {
+  navigation: AcademyManagementScreenNavigationProp;
+}
+
+const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
   const [academies, setAcademies] = useState<Academy[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -52,8 +60,10 @@ const AcademyManagementScreen: React.FC = () => {
   }, []);
 
   const handleAddAcademy = () => {
-    // TODO: 학원 추가 화면으로 네비게이션
-    Alert.alert('준비 중', '학원 추가 기능을 준비 중입니다.');
+    navigation.navigate('AcademyEditScreen', {
+      academy: undefined,
+      onSave: loadAcademies,
+    });
   };
 
   const handleToggleStatus = async (academy: Academy) => {
@@ -69,7 +79,14 @@ const AcademyManagementScreen: React.FC = () => {
             text: '확인',
             onPress: async () => {
               try {
-                const updatedAcademy: Academy = { ...academy, status: newStatus };
+                const updatedAcademy: Academy = { 
+                  ...academy, 
+                  status: newStatus,
+                  // 중단으로 변경하는 경우 현재 년/월을 종료 월로 설정
+                  end_month: newStatus === '중단' && !academy.end_month 
+                    ? new Date().toISOString().slice(0, 7) // YYYY-MM 형식
+                    : academy.end_month
+                };
                 await DatabaseService.updateAcademy(updatedAcademy);
                 await loadAcademies(); // 목록 새로고침
               } catch (error) {
@@ -108,6 +125,13 @@ const AcademyManagementScreen: React.FC = () => {
     );
   };
 
+  const handleEditAcademy = (academy: Academy) => {
+    navigation.navigate('AcademyEditScreen', {
+      academy,
+      onSave: loadAcademies,
+    });
+  };
+
   const handleManageAcademy = (academy: Academy) => {
     Alert.alert(
       academy.name,
@@ -116,10 +140,7 @@ const AcademyManagementScreen: React.FC = () => {
         { text: '취소', style: 'cancel' },
         {
           text: '편집',
-          onPress: () => {
-            // TODO: 학원 편집 화면으로 네비게이션
-            Alert.alert('준비 중', '학원 편집 기능을 준비 중입니다.');
-          }
+          onPress: () => handleEditAcademy(academy)
         },
         {
           text: academy.status === '진행' ? '중단' : '재개',

@@ -5,6 +5,7 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { Ionicons } from '@expo/vector-icons';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { Event } from './src/services/DatabaseService';
+import { Academy } from './src/services/DatabaseService';
 
 // Screens
 import InitialSetupScreen from './src/screens/InitialSetupScreen';
@@ -13,6 +14,7 @@ import AcademyManagementScreen from './src/screens/AcademyManagementScreen';
 import StatisticsScreen from './src/screens/StatisticsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import EventScreen from './src/screens/EventScreen';
+import AcademyEditScreen from './src/screens/AcademyEditScreen';
 
 // Database Service
 import DatabaseService from './src/services/DatabaseService';
@@ -35,6 +37,11 @@ export type RootStackParamList = {
     selectedTime: string;
     scheduleId: number;
     onSave: () => void;
+  };
+  AcademyManagementScreen: undefined;
+  AcademyEditScreen: {
+    academy?: Academy;
+    onSave?: () => void;
   };
 };
 
@@ -169,6 +176,17 @@ export default function App() {
                 presentation: 'modal',
                 gestureEnabled: true,
               }} 
+            />
+            <Stack.Screen 
+              name="AcademyManagementScreen" 
+              component={AcademyManagementScreen}
+              options={{ headerShown: false }}
+            />
+            
+            <Stack.Screen 
+              name="AcademyEditScreen" 
+              component={AcademyEditScreen}
+              options={{ headerShown: false }}
             />
           </>
         )}
