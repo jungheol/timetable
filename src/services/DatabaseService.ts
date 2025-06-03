@@ -870,6 +870,54 @@ class DatabaseService {
       console.error('🧪 Test retrieval error:', error);
     }
   }
+
+  // 반복 패턴 조회 메서드 추가
+async getRecurringPattern(id: number): Promise<RecurringPattern | null> {
+  try {
+    const db = await this.ensureDbConnection();
+    const result = await db.getFirstAsync<RecurringPattern>(
+      'SELECT * FROM recurring_patterns WHERE id = ? AND del_yn = 0',
+      [id]
+    );
+    return result || null;
+  } catch (error) {
+    console.error('Error getting recurring pattern:', error);
+    throw error;
+  }
+}
+
+// 학원 ID로 학원 정보 조회 메서드 추가
+async getAcademyById(id: number): Promise<Academy | null> {
+  try {
+    const db = await this.ensureDbConnection();
+    const result = await db.getFirstAsync<Academy>(
+      'SELECT * FROM academies WHERE id = ? AND del_yn = 0',
+      [id]
+    );
+    return result || null;
+  } catch (error) {
+    console.error('Error getting academy by id:', error);
+    throw error;
+  }
+}
+
+// 특정 일정의 상세 정보 조회 (학원 정보 포함)
+async getEventDetails(id: number): Promise<(Event & { academy_name?: string; academy_subject?: string }) | null> {
+  try {
+    const db = await this.ensureDbConnection();
+    const result = await db.getFirstAsync<Event & { academy_name?: string; academy_subject?: string }>(
+      `SELECT e.*, a.name as academy_name, a.subject as academy_subject
+       FROM events e
+       LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+       WHERE e.id = ? AND e.del_yn = 0`,
+      [id]
+    );
+    return result || null;
+  } catch (error) {
+    console.error('Error getting event details:', error);
+    throw error;
+  }
+}
 }
 
 export default new DatabaseService();

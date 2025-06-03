@@ -50,11 +50,14 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   
   // UI 상태
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [academies, setAcademies] = useState<Academy[]>([]);
+  const [selectedAcademy, setSelectedAcademy] = useState<Academy | null>(null);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
   const [showSubjectPicker, setShowSubjectPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
 
   // 요일 데이터
   const weekdays: DayButton[] = [
@@ -97,64 +100,126 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   }, [schedule]);
 
   // 카테고리 옵션
-  const categoryOptions = ['선택안함', '학교/기관', '학원', '공부', '휴식'];
+  const categoryOptions = ['학교/기관', '학원', '공부', '휴식', '선택안함'];
 
   // 과목 옵션
   const subjectOptions: Academy['subject'][] = ['국어', '수학', '영어', '예체능', '사회과학', '기타'];
 
   useEffect(() => {
-    loadSchedule();
-    initializeForm();
+    loadInitialData();
   }, []);
 
-  const loadSchedule = async () => {
+  const loadInitialData = async () => {
     try {
-      const activeSchedule = await DatabaseService.getActiveSchedule();
+      // 스케줄과 학원 정보 동시 로드
+      const [activeSchedule, academyList] = await Promise.all([
+        DatabaseService.getActiveSchedule(),
+        DatabaseService.getAcademies()
+      ]);
+      
       setSchedule(activeSchedule);
+      setAcademies(academyList);
+      
+      // 편집 모드 확인 및 폼 초기화
+      if (event) {
+        setIsEditMode(true);
+        await loadEventData(event, academyList);
+      } else {
+        setIsEditMode(false);
+        initializeNewEventForm();
+      }
     } catch (error) {
-      console.error('Error loading schedule:', error);
+      console.error('Error loading initial data:', error);
+      Alert.alert('오류', '데이터를 불러오는 중 오류가 발생했습니다.');
     }
   };
 
-  const initializeForm = () => {
+  const loadEventData = async (eventData: Event, academyList: Academy[]) => {
+    try {
+      console.log('Loading event data for editing:', eventData);
+      
+      // 기본 정보 설정
+      setTitle(eventData.title);
+      setStartTime(eventData.start_time);
+      setEndTime(eventData.end_time);
+      setCategory(eventData.category);
+      setIsRecurring(eventData.is_recurring || false);
+      
+      // 현재 선택된 날짜의 요일 구하기
+      const currentDayIndex = moment(selectedDate).day();
+      const currentDayKey = weekdays.find(day => day.index === currentDayIndex)?.key;
+      
+      if (eventData.is_recurring && eventData.recurring_group_id) {
+        // 반복 일정인 경우 - 반복 패턴에서 요일 정보 가져오기
+        try {
+          const recurringPattern = await DatabaseService.getRecurringPattern(eventData.recurring_group_id);
+          if (recurringPattern) {
+            const selectedDaysSet = new Set<string>();
+            if (recurringPattern.monday) selectedDaysSet.add('monday');
+            if (recurringPattern.tuesday) selectedDaysSet.add('tuesday');
+            if (recurringPattern.wednesday) selectedDaysSet.add('wednesday');
+            if (recurringPattern.thursday) selectedDaysSet.add('thursday');
+            if (recurringPattern.friday) selectedDaysSet.add('friday');
+            if (recurringPattern.saturday) selectedDaysSet.add('saturday');
+            if (recurringPattern.sunday) selectedDaysSet.add('sunday');
+            setSelectedDays(selectedDaysSet);
+          }
+        } catch (error) {
+          console.error('Error loading recurring pattern:', error);
+          // 반복 패턴을 불러올 수 없는 경우 현재 요일만 선택
+          if (currentDayKey) {
+            setSelectedDays(new Set([currentDayKey]));
+          }
+        }
+      } else {
+        // 일반 일정인 경우 현재 요일 선택
+        if (currentDayKey) {
+          setSelectedDays(new Set([currentDayKey]));
+        }
+      }
+      
+      // 학원 카테고리인 경우 학원 정보 설정
+      if (eventData.category === '학원' && eventData.academy_id) {
+        const academy = academyList.find(a => a.id === eventData.academy_id);
+        if (academy) {
+          setSelectedAcademy(academy);
+          setAcademyName(academy.name);
+          setSelectedSubject(academy.subject);
+          
+          console.log('Loaded academy data:', academy);
+        } else {
+          console.warn('Academy not found for ID:', eventData.academy_id);
+          // 학원을 찾을 수 없는 경우 제목에서 학원명 추출
+          setAcademyName(eventData.title);
+        }
+      }
+      
+      console.log('Event data loaded successfully');
+    } catch (error) {
+      console.error('Error loading event data:', error);
+      Alert.alert('오류', '일정 정보를 불러오는 중 오류가 발생했습니다.');
+    }
+  };
+
+  const initializeNewEventForm = () => {
     // 현재 선택된 날짜의 요일 구하기
     const currentDayIndex = moment(selectedDate).day();
     const currentDayKey = weekdays.find(day => day.index === currentDayIndex)?.key;
     
-    if (event) {
-      // 편집 모드
-      setTitle(event.title);
-      setStartTime(event.start_time);
-      setEndTime(event.end_time);
-      setCategory(event.category);
-      setIsRecurring(event.is_recurring);
-      
-      // 편집 모드에서는 현재 요일만 선택
-      if (currentDayKey) {
-        setSelectedDays(new Set([currentDayKey]));
-      }
-      
-      // 학원 카테고리인 경우 추가 정보 설정
-      // 실제로는 academy_id로 학원 정보를 가져와야 함
-      if (event.category === '학원') {
-        setTitle(event.title); // 임시로 제목을 학원명으로 사용
-      }
-    } else {
-      // 새 일정 추가 모드
-      resetForm();
-      
-      // 현재 요일 선택
-      if (currentDayKey) {
-        setSelectedDays(new Set([currentDayKey]));
-      }
-      
-      // 기본 시간 설정
-      if (selectedTime) {
-        setStartTime(selectedTime);
-        const start = moment(selectedTime, 'HH:mm');
-        const interval = schedule?.time_unit === '30min' ? 30 : 60;
-        setEndTime(start.add(interval, 'minutes').format('HH:mm'));
-      }
+    // 새 일정 추가 모드
+    resetForm();
+    
+    // 현재 요일 선택
+    if (currentDayKey) {
+      setSelectedDays(new Set([currentDayKey]));
+    }
+    
+    // 기본 시간 설정
+    if (selectedTime) {
+      setStartTime(selectedTime);
+      const start = moment(selectedTime, 'HH:mm');
+      const interval = schedule?.time_unit === '30min' ? 30 : 60;
+      setEndTime(start.add(interval, 'minutes').format('HH:mm'));
     }
   };
 
@@ -163,8 +228,10 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     setCategory('선택안함');
     setAcademyName('');
     setSelectedSubject('국어');
+    setSelectedAcademy(null);
     setIsRecurring(false);
     setMemo('');
+    setSelectedDays(new Set());
   };
 
   // 요일 선택/해제
@@ -184,6 +251,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     if (newCategory !== '학원') {
       setAcademyName('');
       setSelectedSubject('국어');
+      setSelectedAcademy(null);
     }
   };
 
@@ -213,12 +281,16 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     setIsLoading(true);
 
     try {
-      if (isRecurring) {
-        // 반복 일정 처리
-        await saveRecurringEvent();
+      if (isEditMode) {
+        // 편집 모드
+        await updateExistingEvent();
       } else {
-        // 단일 일정 처리
-        await saveSingleEvent();
+        // 새 일정 생성 모드
+        if (isRecurring) {
+          await saveRecurringEvent();
+        } else {
+          await saveSingleEvent();
+        }
       }
 
       onSave();
@@ -229,6 +301,34 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const updateExistingEvent = async () => {
+    if (!event?.id) return;
+
+    const eventTitle = category === '학원' ? academyName : title;
+    let academyId: number | undefined = selectedAcademy?.id;
+    
+    // 학원 카테고리인 경우 학원 생성/조회
+    if (category === '학원' && academyName.trim()) {
+      academyId = await DatabaseService.createAcademyForRecurringEvent(
+        academyName.trim(),
+        selectedSubject
+      );
+    }
+
+    const updatedEvent: Event = {
+      ...event,
+      title: eventTitle.trim(),
+      start_time: startTime,
+      end_time: endTime,
+      category,
+      academy_id: academyId,
+      event_date: selectedDate, // 편집 시에는 현재 선택된 날짜 유지
+    };
+
+    await DatabaseService.updateEvent(updatedEvent);
+    console.log('Event updated successfully');
   };
 
   const saveSingleEvent = async () => {
@@ -255,29 +355,19 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       is_recurring: false,
     };
 
-    if (event?.id) {
-      // 편집 모드 - 단일 이벤트 업데이트
-      await DatabaseService.updateEvent({ 
-        ...eventData, 
-        id: event.id,
-        event_date: selectedDate
+    if (selectedDaysArray.length === 1) {
+      // 단일 요일 - 기존 방식
+      await DatabaseService.createEvent({
+        ...eventData,
+        event_date: selectedDate,
       });
     } else {
-      // 새 일정 추가
-      if (selectedDaysArray.length === 1) {
-        // 단일 요일 - 기존 방식
-        await DatabaseService.createEvent({
-          ...eventData,
-          event_date: selectedDate,
-        });
-      } else {
-        // 다중 요일 - 각 요일별로 이벤트 생성
-        await DatabaseService.createMultiDayEvents(
-          eventData,
-          selectedDaysArray,
-          selectedDate
-        );
-      }
+      // 다중 요일 - 각 요일별로 이벤트 생성
+      await DatabaseService.createMultiDayEvents(
+        eventData,
+        selectedDaysArray,
+        selectedDate
+      );
     }
   };
 
@@ -340,9 +430,13 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   const handleDelete = async () => {
     if (!event?.id) return;
 
+    const deleteMessage = event.is_recurring 
+      ? '이 반복 일정을 삭제하시겠습니까? 모든 반복 일정이 삭제됩니다.'
+      : '이 일정을 삭제하시겠습니까?';
+
     Alert.alert(
       '일정 삭제',
-      '이 일정을 삭제하시겠습니까?',
+      deleteMessage,
       [
         { text: '취소', style: 'cancel' },
         {
@@ -351,7 +445,11 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           onPress: async () => {
             setIsLoading(true);
             try {
-              await DatabaseService.deleteEvent(event.id!);
+              if (event.is_recurring) {
+                await DatabaseService.deleteRecurringEvent(event.id!);
+              } else {
+                await DatabaseService.deleteEvent(event.id!);
+              }
               onSave();
               navigation.goBack();
             } catch (error) {
@@ -378,7 +476,9 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           <Ionicons name="close" size={24} color="#333" />
         </TouchableOpacity>
         
-        <Text style={styles.headerTitle}>추가</Text>
+        <Text style={styles.headerTitle}>
+          {isEditMode ? '수정' : '추가'}
+        </Text>
         
         <View style={styles.headerRight}>
           {event && (
@@ -430,7 +530,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
                 onPress={() => setShowStartTimePicker(true)}
               >
                 <Text style={styles.timeButtonText}>
-                  오전 {startTime || '시간 선택'}
+                  {startTime ? moment(startTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
                 </Text>
               </TouchableOpacity>
               <Text style={styles.timeSeparator}>~</Text>
@@ -439,7 +539,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
                 onPress={() => setShowEndTimePicker(true)}
               >
                 <Text style={styles.timeButtonText}>
-                  오전 {endTime || '시간 선택'}
+                  {endTime ? moment(endTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -475,9 +575,9 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           <>
             {/* 제목 (학원명) */}
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>제목</Text>
+              <Text style={styles.sectionTitle}>학원명</Text>
               <View style={styles.inputContainer}>
-                <Ionicons name="book-outline" size={20} color="#666" style={styles.inputIcon} />
+                <Ionicons name="school-outline" size={20} color="#666" style={styles.inputIcon} />
                 <TextInput
                   style={styles.textInput}
                   value={academyName}
@@ -531,18 +631,32 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 반복 설정 */}
-        <View style={styles.section}>
-          <View style={styles.toggleContainer}>
-            <Text style={styles.toggleLabel}>선택한 요일 매주 반복</Text>
-            <Switch
-              value={isRecurring}
-              onValueChange={setIsRecurring}
-              trackColor={{ false: '#E5E5EA', true: '#34C759' }}
-              thumbColor={isRecurring ? '#fff' : '#fff'}
-            />
+        {/* 반복 설정 (편집 모드가 아니거나 기존에 반복 일정이 아닌 경우에만 표시) */}
+        {(!isEditMode || !event?.is_recurring) && (
+          <View style={styles.section}>
+            <View style={styles.toggleContainer}>
+              <Text style={styles.toggleLabel}>선택한 요일 매주 반복</Text>
+              <Switch
+                value={isRecurring}
+                onValueChange={setIsRecurring}
+                trackColor={{ false: '#E5E5EA', true: '#34C759' }}
+                thumbColor={isRecurring ? '#fff' : '#fff'}
+              />
+            </View>
           </View>
-        </View>
+        )}
+
+        {/* 기존 반복 일정 편집 시 안내 메시지 */}
+        {isEditMode && event?.is_recurring && (
+          <View style={styles.section}>
+            <View style={styles.infoContainer}>
+              <Ionicons name="information-circle-outline" size={20} color="#FF9500" />
+              <Text style={styles.infoText}>
+                반복 일정은 개별 수정이 불가능합니다. 삭제 후 새로 생성해주세요.
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* 메모 */}
         <View style={styles.section}>
@@ -553,6 +667,8 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
             onChangeText={setMemo}
             placeholder="메모 입력"
             placeholderTextColor="#999"
+            multiline
+            numberOfLines={3}
           />
         </View>
       </ScrollView>
@@ -771,6 +887,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 16,
     color: '#333',
+    textAlignVertical: 'top',
   },
   // 토글
   toggleContainer: {
@@ -788,6 +905,22 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#333',
     fontWeight: '500',
+  },
+  // 정보 컨테이너
+  infoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF3CD',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#FFE69C',
+  },
+  infoText: {
+    fontSize: 14,
+    color: '#856404',
+    marginLeft: 8,
+    flex: 1,
   },
 });
 
