@@ -68,6 +68,19 @@ export interface RecurringPattern {
   del_yn?: boolean;
 }
 
+export interface Holiday {
+  id: number;
+  date: string;           // YYYY-MM-DD 형식
+  name: string;           // 공휴일명
+  is_holiday: boolean;    // 공휴일 여부
+  year: number;           // 연도
+  month: number;          // 월
+  day: number;            // 일
+  created_at?: string;
+  updated_at?: string;
+  del_yn?: boolean;
+}
+
 class DatabaseService {
   private db: SQLite.SQLiteDatabase | null = null;
 
@@ -89,6 +102,7 @@ class DatabaseService {
         await this.db.execAsync(`DROP TABLE IF EXISTS academies;`);
         await this.db.execAsync(`DROP TABLE IF EXISTS recurring_patterns;`);
         await this.db.execAsync(`DROP TABLE IF EXISTS schedules;`);
+        await this.db.execAsync(`DROP TABLE IF EXISTS holidays;`);
         console.log('✅ All tables dropped');
       }
       
@@ -174,6 +188,22 @@ class DatabaseService {
         );
       `);
 
+      // 공휴일 테이블 생성
+      await this.db.execAsync(`
+        CREATE TABLE IF NOT EXISTS holidays (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          is_holiday BOOLEAN DEFAULT TRUE,
+          year INTEGER NOT NULL,
+          month INTEGER NOT NULL,
+          day INTEGER NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          del_yn BOOLEAN DEFAULT FALSE
+        );
+      `);
+
       // 인덱스 생성
       await this.db.execAsync(`
         CREATE INDEX IF NOT EXISTS idx_events_schedule_date 
@@ -183,6 +213,16 @@ class DatabaseService {
       await this.db.execAsync(`
         CREATE INDEX IF NOT EXISTS idx_events_academy 
         ON events(academy_id) WHERE del_yn = FALSE;
+      `);
+
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_holidays_date 
+        ON holidays(date) WHERE del_yn = FALSE;
+      `);
+
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_holidays_year 
+        ON holidays(year) WHERE del_yn = FALSE;
       `);
 
     } catch (error) {
@@ -872,52 +912,285 @@ class DatabaseService {
   }
 
   // 반복 패턴 조회 메서드 추가
-async getRecurringPattern(id: number): Promise<RecurringPattern | null> {
-  try {
-    const db = await this.ensureDbConnection();
-    const result = await db.getFirstAsync<RecurringPattern>(
-      'SELECT * FROM recurring_patterns WHERE id = ? AND del_yn = 0',
-      [id]
-    );
-    return result || null;
-  } catch (error) {
-    console.error('Error getting recurring pattern:', error);
-    throw error;
+  async getRecurringPattern(id: number): Promise<RecurringPattern | null> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getFirstAsync<RecurringPattern>(
+        'SELECT * FROM recurring_patterns WHERE id = ? AND del_yn = 0',
+        [id]
+      );
+      return result || null;
+    } catch (error) {
+      console.error('Error getting recurring pattern:', error);
+      throw error;
+    }
   }
-}
 
-// 학원 ID로 학원 정보 조회 메서드 추가
-async getAcademyById(id: number): Promise<Academy | null> {
-  try {
-    const db = await this.ensureDbConnection();
-    const result = await db.getFirstAsync<Academy>(
-      'SELECT * FROM academies WHERE id = ? AND del_yn = 0',
-      [id]
-    );
-    return result || null;
-  } catch (error) {
-    console.error('Error getting academy by id:', error);
-    throw error;
+  // 학원 ID로 학원 정보 조회 메서드 추가
+  async getAcademyById(id: number): Promise<Academy | null> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getFirstAsync<Academy>(
+        'SELECT * FROM academies WHERE id = ? AND del_yn = 0',
+        [id]
+      );
+      return result || null;
+    } catch (error) {
+      console.error('Error getting academy by id:', error);
+      throw error;
+    }
   }
-}
 
-// 특정 일정의 상세 정보 조회 (학원 정보 포함)
-async getEventDetails(id: number): Promise<(Event & { academy_name?: string; academy_subject?: string }) | null> {
-  try {
-    const db = await this.ensureDbConnection();
-    const result = await db.getFirstAsync<Event & { academy_name?: string; academy_subject?: string }>(
-      `SELECT e.*, a.name as academy_name, a.subject as academy_subject
-       FROM events e
-       LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
-       WHERE e.id = ? AND e.del_yn = 0`,
-      [id]
-    );
-    return result || null;
-  } catch (error) {
-    console.error('Error getting event details:', error);
-    throw error;
+  // 특정 일정의 상세 정보 조회 (학원 정보 포함)
+  async getEventDetails(id: number): Promise<(Event & { academy_name?: string; academy_subject?: string }) | null> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getFirstAsync<Event & { academy_name?: string; academy_subject?: string }>(
+        `SELECT e.*, a.name as academy_name, a.subject as academy_subject
+        FROM events e
+        LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+        WHERE e.id = ? AND e.del_yn = 0`,
+        [id]
+      );
+      return result || null;
+    } catch (error) {
+      console.error('Error getting event details:', error);
+      throw error;
+    }
   }
-}
+
+  // 공휴일 저장
+  async saveHolidays(holidays: Omit<Holiday, 'id' | 'created_at' | 'updated_at'>[]): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 트랜잭션으로 일괄 저장
+      await db.execAsync('BEGIN TRANSACTION');
+      
+      for (const holiday of holidays) {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO holidays (
+            date, name, is_holiday, year, month, day, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          [
+            holiday.date,
+            holiday.name,
+            holiday.is_holiday ? 1 : 0,
+            holiday.year,
+            holiday.month,
+            holiday.day
+          ]
+        );
+      }
+      
+      await db.execAsync('COMMIT');
+      console.log(`✅ Saved ${holidays.length} holidays to database`);
+    } catch (error) {
+      const db = await this.ensureDbConnection();
+      await db.execAsync('ROLLBACK');
+      console.error('Error saving holidays:', error);
+      throw error;
+    }
+  }
+
+  // 특정 연도의 공휴일 조회
+  async getHolidaysByYear(year: number): Promise<Holiday[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getAllAsync<Holiday>(
+        'SELECT * FROM holidays WHERE year = ? AND del_yn = 0 ORDER BY date',
+        [year]
+      );
+      return result;
+    } catch (error) {
+      console.error('Error getting holidays by year:', error);
+      throw error;
+    }
+  }
+
+  // 특정 날짜의 공휴일 조회
+  async getHolidayByDate(date: string): Promise<Holiday | null> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getFirstAsync<Holiday>(
+        'SELECT * FROM holidays WHERE date = ? AND del_yn = 0',
+        [date]
+      );
+      return result || null;
+    } catch (error) {
+      console.error('Error getting holiday by date:', error);
+      throw error;
+    }
+  }
+
+  // 특정 기간의 공휴일 조회
+  async getHolidaysInRange(startDate: string, endDate: string): Promise<Holiday[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getAllAsync<Holiday>(
+        'SELECT * FROM holidays WHERE date BETWEEN ? AND ? AND del_yn = 0 ORDER BY date',
+        [startDate, endDate]
+      );
+      return result;
+    } catch (error) {
+      console.error('Error getting holidays in range:', error);
+      throw error;
+    }
+  }
+
+  // 공휴일 데이터 존재 여부 확인
+  async hasHolidaysForYear(year: number): Promise<boolean> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getFirstAsync<{ count: number }>(
+        'SELECT COUNT(*) as count FROM holidays WHERE year = ? AND del_yn = 0',
+        [year]
+      );
+      const count = result?.count || 0;
+      console.log(`📊 Holidays in DB for year ${year}: ${count} records`);
+      return count > 0;
+    } catch (error) {
+      console.error('Error checking holidays existence:', error);
+      return false;
+    }
+  }
+
+  // 공휴일 캐시 무효화 (재다운로드 시 사용)
+  async clearHolidaysForYear(year: number): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      await db.runAsync(
+        'UPDATE holidays SET del_yn = 1 WHERE year = ?',
+        [year]
+      );
+      console.log(`✅ Cleared holidays for year ${year}`);
+    } catch (error) {
+      console.error('Error clearing holidays:', error);
+      throw error;
+    }
+  }
+
+  // 🧪 공휴일 디버깅용 메서드
+  async debugHolidayData(): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      console.log('🧪 === Holiday Database Debug Info ===');
+      
+      // 1. 전체 공휴일 개수
+      const totalCount = await db.getFirstAsync<{ count: number }>(
+        'SELECT COUNT(*) as count FROM holidays WHERE del_yn = 0'
+      );
+      console.log(`🧪 Total holidays in DB: ${totalCount?.count || 0}`);
+      
+      // 2. 연도별 공휴일 개수
+      const yearCounts = await db.getAllAsync<{ year: number; count: number }>(
+        'SELECT year, COUNT(*) as count FROM holidays WHERE del_yn = 0 GROUP BY year ORDER BY year'
+      );
+      console.log('🧪 Holidays by year:');
+      yearCounts.forEach(({ year, count }) => {
+        console.log(`   ${year}: ${count} holidays`);
+      });
+      
+      // 3. 현재 연도 공휴일 상세 목록
+      const currentYear = new Date().getFullYear();
+      const currentYearHolidays = await db.getAllAsync<Holiday>(
+        'SELECT * FROM holidays WHERE year = ? AND del_yn = 0 ORDER BY date',
+        [currentYear]
+      );
+      
+      console.log(`🧪 ${currentYear} Holiday Details:`);
+      currentYearHolidays.forEach(holiday => {
+        console.log(`   📅 ${holiday.date}: ${holiday.name} (Holiday: ${holiday.is_holiday})`);
+      });
+      
+      // 4. 다음 연도 공휴일 (있는 경우)
+      const nextYear = currentYear + 1;
+      const nextYearHolidays = await db.getAllAsync<Holiday>(
+        'SELECT * FROM holidays WHERE year = ? AND del_yn = 0 ORDER BY date',
+        [nextYear]
+      );
+      
+      if (nextYearHolidays.length > 0) {
+        console.log(`🧪 ${nextYear} Holiday Details:`);
+        nextYearHolidays.forEach(holiday => {
+          console.log(`   📅 ${holiday.date}: ${holiday.name} (Holiday: ${holiday.is_holiday})`);
+        });
+      } else {
+        console.log(`🧪 ${nextYear}: No holidays found`);
+      }
+      
+      // 5. 테이블 스키마 정보
+      const tableInfo = await db.getAllAsync(
+        "PRAGMA table_info(holidays)"
+      );
+      console.log('🧪 Holidays table schema:');
+      tableInfo.forEach((column: any) => {
+        console.log(`   ${column.name}: ${column.type} (nullable: ${!column.notnull})`);
+      });
+      
+      // 6. 최근 생성/수정된 공휴일
+      const recentHolidays = await db.getAllAsync<Holiday>(
+        'SELECT * FROM holidays WHERE del_yn = 0 ORDER BY created_at DESC LIMIT 5'
+      );
+      console.log('🧪 Recently added holidays:');
+      recentHolidays.forEach(holiday => {
+        console.log(`   📅 ${holiday.date}: ${holiday.name} (created: ${holiday.created_at})`);
+      });
+      
+      console.log('🧪 === End Holiday Debug Info ===');
+      
+    } catch (error) {
+      console.error('🧪 Error in holiday debug:', error);
+    }
+  }
+
+  // 🧪 특정 날짜 범위의 공휴일 디버깅
+  async debugHolidaysInRange(startDate: string, endDate: string): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      console.log(`🧪 === Holiday Debug for ${startDate} ~ ${endDate} ===`);
+      
+      const holidays = await db.getAllAsync<Holiday>(
+        'SELECT * FROM holidays WHERE date BETWEEN ? AND ? AND del_yn = 0 ORDER BY date',
+        [startDate, endDate]
+      );
+      
+      console.log(`🧪 Found ${holidays.length} holidays in range:`);
+      holidays.forEach(holiday => {
+        console.log(`   📅 ${holiday.date}: ${holiday.name} (Holiday: ${holiday.is_holiday})`);
+      });
+      
+      if (holidays.length === 0) {
+        console.log('🧪 ⚠️ No holidays found in this date range');
+        
+        // 가장 가까운 공휴일 찾기
+        const nearestBefore = await db.getFirstAsync<Holiday>(
+          'SELECT * FROM holidays WHERE date < ? AND del_yn = 0 ORDER BY date DESC LIMIT 1',
+          [startDate]
+        );
+        
+        const nearestAfter = await db.getFirstAsync<Holiday>(
+          'SELECT * FROM holidays WHERE date > ? AND del_yn = 0 ORDER BY date ASC LIMIT 1',
+          [endDate]
+        );
+        
+        if (nearestBefore) {
+          console.log(`🧪 Nearest holiday before: ${nearestBefore.date} (${nearestBefore.name})`);
+        }
+        
+        if (nearestAfter) {
+          console.log(`🧪 Nearest holiday after: ${nearestAfter.date} (${nearestAfter.name})`);
+        }
+      }
+      
+      console.log('🧪 === End Range Debug ===');
+      
+    } catch (error) {
+      console.error('🧪 Error in range holiday debug:', error);
+    }
+  }
 }
 
 export default new DatabaseService();

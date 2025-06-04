@@ -7,38 +7,20 @@ import {
   TouchableOpacity,
   ScrollView,
   Dimensions,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { useFocusEffect } from '@react-navigation/native';
 import moment from 'moment';
 import 'moment/locale/ko';
-import DatabaseService, { Event, Schedule } from '../services/DatabaseService';
+import DatabaseService, { Event, Schedule, Holiday } from '../services/DatabaseService';
+import HolidayService from '../services/HolidayService';
 import { RootStackParamList } from '../../App';
 
 moment.locale('ko');
 
 const { width: screenWidth } = Dimensions.get('window');
-
-// 한국 공휴일 데이터 (2025년 기준)
-const holidays = {
-  '2025-01-01': '신정',
-  '2025-01-28': '설날 연휴',
-  '2025-01-29': '설날',
-  '2025-01-30': '설날 연휴',
-  '2025-03-01': '삼일절',
-  '2025-05-05': '어린이날',
-  '2025-05-06': '어린이날 대체공휴일',
-  '2025-06-06': '현충일',
-  '2025-08-15': '광복절',
-  '2025-09-06': '추석 연휴',
-  '2025-09-07': '추석 연휴',
-  '2025-09-08': '추석',
-  '2025-09-09': '추석 연휴',
-  '2025-10-03': '개천절',
-  '2025-10-09': '한글날',
-  '2025-12-25': '크리스마스',
-};
 
 type TimeTableScreenNavigationProp = StackNavigationProp<RootStackParamList>;
 
@@ -50,9 +32,12 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
   const [currentWeek, setCurrentWeek] = useState(moment());
   const [events, setEvents] = useState<Event[]>([]);
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [holidays, setHolidays] = useState<{ [key: string]: Holiday }>({});
+  const [isLoadingHolidays, setIsLoadingHolidays] = useState(false);
 
   useEffect(() => {
     loadSchedule();
+    initializeHolidays();
   }, []);
 
   // 화면에 포커스될 때마다 이벤트 새로고침
@@ -60,6 +45,7 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     useCallback(() => {
       if (schedule) {
         loadEvents();
+        loadHolidaysForCurrentPeriod();
       }
     }, [schedule, currentWeek])
   );
@@ -70,6 +56,70 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       setSchedule(activeSchedule);
     } catch (error) {
       console.error('Error loading schedule:', error);
+    }
+  };
+
+  const initializeHolidays = async () => {
+    try {
+      console.log('🎌 Initializing holidays...');
+      setIsLoadingHolidays(true);
+      
+      // DB 확인 후 필요시에만 API 호출하는 초기화 메서드 사용
+      await HolidayService.initializeCurrentYears();
+      
+      console.log('✅ Holiday initialization complete');
+    } catch (error) {
+      console.error('❌ Error initializing holidays:', error);
+      // 초기화 실패해도 앱은 계속 동작
+    } finally {
+      setIsLoadingHolidays(false);
+    }
+  };
+
+  const loadHolidaysForCurrentPeriod = async () => {
+    try {
+      const weekDays = getWeekDays();
+      const startDate = weekDays[0].format('YYYY-MM-DD');
+      const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
+      
+      console.log(`🎌 Loading holidays for period: ${startDate} ~ ${endDate}`);
+      
+      // DB에서 현재 표시 기간의 공휴일 조회
+      const periodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
+      
+      // 만약 해당 기간에 공휴일이 없다면, 연도별로 확인해서 없으면 API 호출
+      if (periodHolidays.length === 0) {
+        const years = Array.from(new Set(weekDays.map(day => day.year())));
+        console.log(`🔍 No holidays found for period, checking years: ${years.join(', ')}`);
+        
+        for (const year of years) {
+          const yearHolidays = await HolidayService.getHolidaysForYear(year);
+          console.log(`📅 Loaded ${yearHolidays.length} holidays for year ${year}`);
+        }
+        
+        // 다시 조회
+        const updatedPeriodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
+        
+        // 날짜를 키로 하는 객체로 변환
+        const holidayMap: { [key: string]: Holiday } = {};
+        updatedPeriodHolidays.forEach(holiday => {
+          holidayMap[holiday.date] = holiday;
+        });
+        
+        setHolidays(holidayMap);
+        console.log(`🎌 Final loaded ${updatedPeriodHolidays.length} holidays for period after API check`);
+      } else {
+        // 날짜를 키로 하는 객체로 변환
+        const holidayMap: { [key: string]: Holiday } = {};
+        periodHolidays.forEach(holiday => {
+          holidayMap[holiday.date] = holiday;
+        });
+        
+        setHolidays(holidayMap);
+        console.log(`🎌 Loaded ${periodHolidays.length} holidays for period from DB`);
+      }
+    } catch (error) {
+      console.error('❌ Error loading holidays for period:', error);
     }
   };
 
@@ -106,6 +156,93 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       console.error('Test error:', error);
     }
   }, [schedule]);
+
+  // 🧪 공휴일 디버깅 메서드
+  const debugHolidays = useCallback(async () => {
+    try {
+      console.log('🧪 Starting holiday debug...');
+      
+      // 전체 공휴일 정보 디버깅
+      await DatabaseService.debugHolidayData();
+      
+      // 현재 표시 중인 주간의 공휴일 디버깅
+      if (schedule) {
+        const weekDays = getWeekDays();
+        const startDate = weekDays[0].format('YYYY-MM-DD');
+        const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
+        
+        await DatabaseService.debugHolidaysInRange(startDate, endDate);
+        
+        Alert.alert(
+          '공휴일 디버그 완료', 
+          `DB 공휴일 정보를 콘솔에 출력했습니다.\n\n현재 주간: ${startDate} ~ ${endDate}\n표시된 공휴일: ${Object.keys(holidays).length}개\n\n자세한 내용은 개발자 도구의 콘솔을 확인하세요.`
+        );
+      } else {
+        Alert.alert(
+          '공휴일 디버그 완료', 
+          `DB 공휴일 정보를 콘솔에 출력했습니다.\n\n자세한 내용은 개발자 도구의 콘솔을 확인하세요.`
+        );
+      }
+    } catch (error) {
+      console.error('🧪 Holiday debug error:', error);
+      Alert.alert('디버그 오류', '공휴일 디버깅 중 오류가 발생했습니다.');
+    }
+  }, [schedule, holidays]); // getWeekDays 의존성 제거
+
+  // 공휴일 강제 업데이트
+  const handleRefreshHolidays = async () => {
+    if (isLoadingHolidays) return; // 중복 요청 방지
+    
+    try {
+      const currentYear = new Date().getFullYear();
+      const nextYear = currentYear + 1;
+      
+              Alert.alert(
+        '공휴일 업데이트',
+        `공휴일 데이터를 API에서 다시 가져오시겠습니까?\n\n현재 상태:\n• DB에서 공휴일 우선 로드\n• 없으면 API에서 자동 수집\n• API 키 문제시 데이터 없음`,
+        [
+          { text: '취소', style: 'cancel' },
+          {
+            text: '강제 업데이트',
+            onPress: async () => {
+              setIsLoadingHolidays(true);
+              try {
+                console.log('🔄 Manual holiday update requested...');
+                await HolidayService.forceUpdateCurrentYears();
+                await loadHolidaysForCurrentPeriod();
+                
+                // 업데이트 결과 확인
+                const currentYear = new Date().getFullYear();
+                const currentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
+                
+                if (currentYearHolidays.length > 0) {
+                  Alert.alert(
+                    '업데이트 완료', 
+                    `${currentYear}년 공휴일 ${currentYearHolidays.length}개가 업데이트되었습니다.`
+                  );
+                } else {
+                  Alert.alert(
+                    '업데이트 완료', 
+                    `API에서 공휴일 데이터를 가져올 수 없습니다.\nAPI 키 등록이 필요할 수 있습니다.`
+                  );
+                }
+              } catch (error) {
+                console.error('❌ Holiday update error:', error);
+                Alert.alert(
+                  '업데이트 오류', 
+                  'API에서 공휴일 데이터를 가져오는 중 오류가 발생했습니다.\n네트워크 연결과 API 키를 확인해주세요.'
+                );
+              } finally {
+                setIsLoadingHolidays(false);
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      console.error('Error in refresh holidays:', error);
+    }
+  };
 
   const getWeekDays = () => {
     const startOfWeek = schedule?.show_weekend
@@ -157,11 +294,6 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       return eventDateMatches && timeMatches;
     });
     
-    // 디버깅용 로그 (필요시 주석 해제)
-    // if (filteredEvents.length > 0) {
-    //   console.log(`📅 ${dateStr} ${time}:`, filteredEvents.map(e => e.title));
-    // }
-    
     return filteredEvents;
   };
 
@@ -206,7 +338,7 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
 
   const isHoliday = (date: moment.Moment) => {
     const dateStr = date.format('YYYY-MM-DD');
-    return holidays[dateStr as keyof typeof holidays];
+    return holidays[dateStr];
   };
 
   const isToday = (date: moment.Moment) => {
@@ -247,9 +379,22 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
           <Ionicons name="create-outline" size={24} color="#007AFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>시간표</Text>
-        <TouchableOpacity onPress={testRecurringEvents}>
-          <Ionicons name="bug-outline" size={24} color="#FF9500" />
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={handleRefreshHolidays} disabled={isLoadingHolidays}>
+            <Ionicons 
+              name={isLoadingHolidays ? "refresh" : "calendar-outline"} 
+              size={24} 
+              color="#007AFF" 
+              style={isLoadingHolidays ? styles.rotating : undefined}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={debugHolidays}>
+            <Ionicons name="information-circle-outline" size={24} color="#34C759" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={testRecurringEvents}>
+            <Ionicons name="bug-outline" size={24} color="#FF9500" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* 주간 네비게이션 */}
@@ -279,25 +424,45 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
           {events.filter(e => e.is_recurring).length > 0 && 
             ` (반복: ${events.filter(e => e.is_recurring).length}개)`
           }
+          {Object.keys(holidays).length > 0 && 
+            ` | 공휴일: ${Object.keys(holidays).length}개`
+          }
         </Text>
       </View>
 
       {/* 날짜 헤더 */}
       <View style={styles.dateHeader}>
         <View style={[styles.timeColumn, { width: dayWidth }]} />
-        {weekDays.map((day, index) => (
-          <View key={index} style={[styles.dayColumn, { width: dayWidth }]}>
-            <Text style={[styles.dayName, isToday(day) && styles.todayText]}>
-              {day.format('ddd')}
-            </Text>
-            <View style={styles.dayDateContainer}>
-              <Text style={[styles.dayDate, isToday(day) && styles.todayDate]}>
-                {day.format('DD')}
+        {weekDays.map((day, index) => {
+          const holiday = isHoliday(day);
+          return (
+            <View key={index} style={[styles.dayColumn, { width: dayWidth }]}>
+              <Text style={[
+                styles.dayName, 
+                isToday(day) && styles.todayText,
+                holiday && styles.holidayText
+              ]}>
+                {day.format('ddd')}
               </Text>
-              {isHoliday(day) && <View style={styles.holidayDot} />}
+              <View style={styles.dayDateContainer}>
+                <Text style={[
+                  styles.dayDate, 
+                  isToday(day) && styles.todayDate,
+                  holiday && styles.holidayDate
+                ]}>
+                  {day.format('DD')}
+                </Text>
+                {holiday && (
+                  <View style={styles.holidayIndicator}>
+                    <Text style={styles.holidayName} numberOfLines={1}>
+                      {holiday.name}
+                    </Text>
+                  </View>
+                )}
+              </View>
             </View>
-          </View>
-        ))}
+          );
+        })}
       </View>
 
       {/* 시간표 그리드 */}
@@ -307,34 +472,38 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
             <View style={[styles.timeCell, { width: dayWidth }]}>
               <Text style={styles.timeText}>{time}</Text>
             </View>
-            {weekDays.map((day, dayIndex) => (
-              <TouchableOpacity
-                key={dayIndex}
-                style={[
-                  styles.scheduleCell,
-                  { width: dayWidth },
-                  isToday(day) && styles.todayColumn,
-                ]}
-                onPress={() => handleCellPress(day, time)}
-              >
-                {getEventsForDateAndTime(day, time).map((event, eventIndex) => (
-                  <View
-                    key={`${event.id}-${eventIndex}`}
-                    style={[
-                      styles.eventBlock,
-                      getEventStyle(event.category),
-                    ]}
-                  >
-                    <Text style={styles.eventTitle} numberOfLines={1}>
-                      {event.title}
-                      {event.is_recurring && (
-                        <Text style={styles.recurringIndicator}> ↻</Text>
-                      )}
-                    </Text>
-                  </View>
-                ))}
-              </TouchableOpacity>
-            ))}
+            {weekDays.map((day, dayIndex) => {
+              const holiday = isHoliday(day);
+              return (
+                <TouchableOpacity
+                  key={dayIndex}
+                  style={[
+                    styles.scheduleCell,
+                    { width: dayWidth },
+                    isToday(day) && styles.todayColumn,
+                    holiday && styles.holidayColumn,
+                  ]}
+                  onPress={() => handleCellPress(day, time)}
+                >
+                  {getEventsForDateAndTime(day, time).map((event, eventIndex) => (
+                    <View
+                      key={`${event.id}-${eventIndex}`}
+                      style={[
+                        styles.eventBlock,
+                        getEventStyle(event.category),
+                      ]}
+                    >
+                      <Text style={styles.eventTitle} numberOfLines={1}>
+                        {event.title}
+                        {event.is_recurring && (
+                          <Text style={styles.recurringIndicator}> ↻</Text>
+                        )}
+                      </Text>
+                    </View>
+                  ))}
+                </TouchableOpacity>
+              );
+            })}
           </View>
         ))}
       </ScrollView>
@@ -365,6 +534,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: '#333',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  rotating: {
+    opacity: 0.6,
   },
   weekNavigation: {
     flexDirection: 'row',
@@ -424,6 +601,7 @@ const styles = StyleSheet.create({
   dayDateContainer: {
     alignItems: 'center',
     position: 'relative',
+    minHeight: 30,
   },
   dayDate: {
     fontSize: 16,
@@ -442,14 +620,26 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
   },
-  holidayDot: {
-    position: 'absolute',
-    top: -2,
-    right: -2,
-    width: 8,
-    height: 8,
+  holidayText: {
+    color: '#FF3B30',
+  },
+  holidayDate: {
+    color: '#FF3B30',
+    fontWeight: 'bold',
+  },
+  holidayIndicator: {
+    marginTop: 2,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    backgroundColor: '#FFE6E6',
     borderRadius: 4,
-    backgroundColor: '#FF3B30',
+    maxWidth: 60,
+  },
+  holidayName: {
+    fontSize: 8,
+    color: '#FF3B30',
+    textAlign: 'center',
+    fontWeight: '500',
   },
   timeTable: {
     flex: 1,
@@ -477,6 +667,9 @@ const styles = StyleSheet.create({
   },
   todayColumn: {
     backgroundColor: '#f0f8ff',
+  },
+  holidayColumn: {
+    backgroundColor: '#fff5f5',
   },
   eventBlock: {
     borderRadius: 4,
