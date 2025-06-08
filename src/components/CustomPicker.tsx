@@ -23,6 +23,7 @@ interface CustomPickerProps {
   title: string;
   selectedValue: string;
   options: string[];
+  optionLabels?: string[]; // ✅ 추가된 prop
   onCancel: () => void;
   onConfirm: (value: string) => void;
 }
@@ -32,6 +33,7 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
   title,
   selectedValue,
   options,
+  optionLabels, // ✅ 새로 추가된 prop
   onCancel,
   onConfirm,
 }) => {
@@ -42,6 +44,14 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
   const flatListRef = useRef<Animated.FlatList>(null);
   const prevOptionsRef = useRef<string[]>([]);
   const prevVisibleRef = useRef<boolean>(false);
+
+  // ✅ 표시할 라벨을 결정하는 함수
+  const getDisplayLabel = useCallback((option: string, actualIndex: number): string => {
+    if (optionLabels && optionLabels[actualIndex]) {
+      return optionLabels[actualIndex];
+    }
+    return option;
+  }, [optionLabels]);
 
   // Modal이 열릴 때 선택된 값으로 초기화
   useEffect(() => {
@@ -92,7 +102,7 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
     }
   }, [visible, currentIndex, scrollY, isInitialized, hasOptionsChanged, options]);
 
-  // 아이템 렌더링 - WheelPicker 스타일로 수정
+  // ✅ 아이템 렌더링 - WheelPicker 스타일로 수정 + optionLabels 지원
   const renderItem = useCallback(({ item, index }: ListRenderItemInfo<string>) => {
     // 빈 아이템은 빈 View로 렌더링
     if (!item) {
@@ -125,6 +135,9 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
       extrapolate: 'clamp',
     });
 
+    // ✅ 표시할 텍스트 결정 (optionLabels 사용)
+    const displayText = getDisplayLabel(item, actualIndex);
+
     return (
       <Animated.View
         style={[
@@ -136,11 +149,11 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
         ]}
       >
         <Text style={styles.pickerItemText}>
-          {item}
+          {displayText}
         </Text>
       </Animated.View>
     );
-  }, [scrollY]);
+  }, [scrollY, getDisplayLabel]);
 
   // 스크롤 종료 시 처리
   const handleMomentumScrollEnd = useCallback((
@@ -151,12 +164,12 @@ const CustomPicker: React.FC<CustomPickerProps> = ({
     
     if (index >= 0 && index < options.length) {
       setCurrentIndex(index);
-      setCurrentValue(options[index]);
+      setCurrentValue(options[index]); // ✅ 실제 값은 여전히 options에서 가져옴
     }
   }, [options]);
 
   const handleConfirm = () => {
-    onConfirm(currentValue);
+    onConfirm(currentValue); // ✅ 실제 값 전달 (라벨이 아닌 원본 값)
   };
 
   const handleCancel = () => {

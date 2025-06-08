@@ -56,6 +56,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
   const [showSubjectPicker, setShowSubjectPicker] = useState(false);
+  const [showAcademyPicker, setShowAcademyPicker] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
 
@@ -105,17 +106,27 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   // 과목 옵션
   const subjectOptions: Academy['subject'][] = ['국어', '수학', '영어', '예체능', '사회과학', '기타'];
 
+  // 학원 선택 옵션
+  const academyOptions = useMemo(() => {
+    return academies.map(academy => ({
+      value: academy.id.toString(),
+      label: `${academy.name} (${academy.subject})`
+    }));
+  }, [academies]);
+
   useEffect(() => {
     loadInitialData();
   }, []);
 
   const loadInitialData = async () => {
     try {
-      // 스케줄과 학원 정보 동시 로드
+      // 스케줄과 현재 스케줄의 학원 정보 로드
       const [activeSchedule, academyList] = await Promise.all([
         DatabaseService.getActiveSchedule(),
-        DatabaseService.getAcademies()
+        DatabaseService.getAcademiesBySchedule(scheduleId) // ✅ 현재 스케줄의 학원만 조회
       ]);
+      
+      console.log('📚 Loaded academies for schedule', scheduleId, ':', academyList);
       
       setSchedule(activeSchedule);
       setAcademies(academyList);
@@ -255,6 +266,23 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   };
 
+  // 학원 선택 처리
+  const handleAcademySelect = (academyIdStr: string) => {
+    if (academyIdStr === 'new') {
+      // 새 학원 추가
+      setSelectedAcademy(null);
+      setAcademyName('');
+      setSelectedSubject('국어');
+    } else {
+      const academy = academies.find(a => a.id.toString() === academyIdStr);
+      if (academy) {
+        setSelectedAcademy(academy);
+        setAcademyName(academy.name);
+        setSelectedSubject(academy.subject);
+      }
+    }
+  };
+
   const handleSave = async () => {
     // 유효성 검사
     if (selectedDays.size === 0) {
@@ -313,7 +341,8 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     if (category === '학원' && academyName.trim()) {
       academyId = await DatabaseService.createAcademyForRecurringEvent(
         academyName.trim(),
-        selectedSubject
+        selectedSubject,
+        scheduleId // ✅ 스케줄 ID 전달
       );
     }
 
@@ -341,7 +370,8 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     if (category === '학원' && academyName.trim()) {
       academyId = await DatabaseService.createAcademyForRecurringEvent(
         academyName.trim(),
-        selectedSubject
+        selectedSubject,
+        scheduleId // ✅ 스케줄 ID 전달
       );
     }
     
@@ -404,7 +434,8 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       console.log('Creating academy for recurring event...');
       academyId = await DatabaseService.createAcademyForRecurringEvent(
         academyName.trim(),
-        selectedSubject
+        selectedSubject,
+        scheduleId // ✅ 스케줄 ID 전달
       );
       console.log('Academy ID:', academyId);
     }
@@ -573,6 +604,25 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         {/* 학원 선택 시 추가 필드 */}
         {category === '학원' && (
           <>
+            {/* 기존 학원 선택 또는 새 학원 추가 */}
+            {academies.length > 0 && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>학원 선택</Text>
+                <TouchableOpacity
+                  style={styles.pickerButton}
+                  onPress={() => setShowAcademyPicker(true)}
+                >
+                  <Text style={styles.pickerButtonText}>
+                    {selectedAcademy 
+                      ? `${selectedAcademy.name} (${selectedAcademy.subject})`
+                      : '학원 선택 또는 새로 추가'
+                    }
+                  </Text>
+                  <Ionicons name="chevron-down-outline" size={20} color="#666" />
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* 제목 (학원명) */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>학원명</Text>
@@ -703,6 +753,20 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         onConfirm={(value) => {
           setEndTime(value);
           setShowEndTimePicker(false);
+        }}
+      />
+
+      {/* 학원 선택 Picker */}
+      <CustomPicker
+        visible={showAcademyPicker}
+        title="학원 선택"
+        selectedValue={selectedAcademy?.id.toString() || 'new'}
+        options={[...academyOptions.map(opt => opt.value), 'new']}
+        optionLabels={[...academyOptions.map(opt => opt.label), '새 학원 추가']}
+        onCancel={() => setShowAcademyPicker(false)}
+        onConfirm={(value) => {
+          handleAcademySelect(value);
+          setShowAcademyPicker(false);
         }}
       />
     </SafeAreaView>
@@ -858,6 +922,23 @@ const styles = StyleSheet.create({
   },
   subjectButtonTextSelected: {
     color: '#fff',
+  },
+  // Picker 버튼
+  pickerButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  pickerButtonText: {
+    fontSize: 16,
+    color: '#333',
+    flex: 1,
   },
   // 입력 필드
   inputContainer: {

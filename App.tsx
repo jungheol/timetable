@@ -43,6 +43,7 @@ export type RootStackParamList = {
   AcademyManagementScreen: undefined;
   AcademyEditScreen: {
     academy?: Academy;
+    scheduleId: number;
     onSave?: () => void;
   };
   // 새 스케줄 생성을 위한 InitialSetupScreen 네비게이션

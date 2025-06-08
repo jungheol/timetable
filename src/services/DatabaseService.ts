@@ -32,6 +32,7 @@ export interface Event {
 
 export interface Academy {
   id: number;
+  schedule_id: number;
   name: string;
   subject: '국어' | '수학' | '영어' | '예체능' | '사회과학' | '기타';
   monthly_fee?: number;
@@ -144,6 +145,7 @@ class DatabaseService {
       await this.db.execAsync(`
         CREATE TABLE IF NOT EXISTS academies (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
+          schedule_id INTEGER NOT NULL,
           name TEXT NOT NULL,
           subject TEXT CHECK(subject IN ('국어', '수학', '영어', '예체능', '사회과학', '기타')),
           monthly_fee INTEGER,
@@ -162,7 +164,8 @@ class DatabaseService {
           note TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          del_yn BOOLEAN DEFAULT FALSE
+          del_yn BOOLEAN DEFAULT FALSE,
+          FOREIGN KEY (schedule_id) REFERENCES schedules(id)
         );
       `);
 
@@ -399,6 +402,20 @@ async deleteSchedule(id: number): Promise<void> {
 }
 
   // 학원 관리
+  async getAcademiesBySchedule(scheduleId: number): Promise<Academy[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getAllAsync<Academy>(
+        'SELECT * FROM academies WHERE schedule_id = ? AND del_yn = 0 ORDER BY created_at DESC',
+        [scheduleId]
+      );
+      return result;
+    } catch (error) {
+      console.error('Error getting academies by schedule:', error);
+      throw error;
+    }
+  }
+
   async getAcademies(): Promise<Academy[]> {
     try {
       const db = await this.ensureDbConnection();
@@ -417,12 +434,13 @@ async deleteSchedule(id: number): Promise<void> {
       const db = await this.ensureDbConnection();
       const result = await db.runAsync(
         `INSERT INTO academies (
-          name, subject, monthly_fee, payment_cycle, payment_method, 
+          schedule_id, name, subject, monthly_fee, payment_cycle, payment_method, 
           payment_day, payment_institution, payment_account, textbook_fee, 
           textbook_bank, textbook_account, start_month, end_month, 
           status, provides_vehicle, note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
+          academy.schedule_id,
           academy.name, 
           academy.subject, 
           academy.monthly_fee ?? null, 
@@ -453,7 +471,7 @@ async deleteSchedule(id: number): Promise<void> {
       const db = await this.ensureDbConnection();
       await db.runAsync(
         `UPDATE academies SET 
-         name = ?, subject = ?, monthly_fee = ?, payment_cycle = ?,
+         schedule_id = ?, name = ?, subject = ?, monthly_fee = ?, payment_cycle = ?,
          payment_method = ?, payment_day = ?, payment_institution = ?,
          payment_account = ?, textbook_fee = ?, textbook_bank = ?,
          textbook_account = ?, start_month = ?, end_month = ?,
@@ -461,6 +479,7 @@ async deleteSchedule(id: number): Promise<void> {
          updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [
+          academy.schedule_id,
           academy.name, 
           academy.subject, 
           academy.monthly_fee ?? null, 
@@ -653,31 +672,32 @@ async deleteSchedule(id: number): Promise<void> {
   // 반복 일정과 연결된 학원 정보 저장 (학원 카테고리인 경우)
   async createAcademyForRecurringEvent(
     academyName: string,
-    subject: Academy['subject']
+    subject: Academy['subject'],
+    scheduleId: number
   ): Promise<number> {
     try {
       const db = await this.ensureDbConnection();
       
-      console.log('Creating/finding academy:', academyName, subject); // 디버깅용
+      console.log('Creating/finding academy:', academyName, subject, 'for schedule:', scheduleId);
       
-      // 동일한 이름과 과목의 학원이 있는지 확인
+      // 동일한 스케줄에서 동일한 이름과 과목의 학원이 있는지 확인
       const existingAcademy = await db.getFirstAsync<Academy>(
-        'SELECT * FROM academies WHERE name = ? AND subject = ? AND del_yn = 0',
-        [academyName, subject]
+        'SELECT * FROM academies WHERE schedule_id = ? AND name = ? AND subject = ? AND del_yn = 0',
+        [scheduleId, academyName, subject]
       );
       
       if (existingAcademy) {
-        console.log('Found existing academy:', existingAcademy.id); // 디버깅용
+        console.log('Found existing academy:', existingAcademy.id);
         return existingAcademy.id;
       }
       
       // 새 학원 생성
       const result = await db.runAsync(
-        `INSERT INTO academies (name, subject, status, del_yn) VALUES (?, ?, ?, ?)`,
-        [academyName, subject, '진행', 0]
+        `INSERT INTO academies (schedule_id, name, subject, status, del_yn) VALUES (?, ?, ?, ?, ?)`,
+        [scheduleId, academyName, subject, '진행', 0]
       );
       
-      console.log('Created new academy with ID:', result.lastInsertRowId); // 디버깅용
+      console.log('Created new academy with ID:', result.lastInsertRowId);
       return result.lastInsertRowId;
     } catch (error) {
       console.error('Error creating academy for recurring event:', error);

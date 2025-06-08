@@ -27,7 +27,7 @@ interface Props {
 }
 
 const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
-  const { academy, onSave } = route.params || {};
+  const { academy, scheduleId, onSave } = route.params || {};
   const isEditMode = !!academy;
 
   // 기본 정보
@@ -84,16 +84,27 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
   const monthOptions = generateMonthOptions();
 
   useEffect(() => {
+    // 스케줄 ID 확인
+    if (!scheduleId) {
+      Alert.alert('오류', '잘못된 접근입니다.');
+      navigation.goBack();
+      return;
+    }
+
+    console.log('📚 AcademyEditScreen - Schedule ID:', scheduleId, 'Edit mode:', isEditMode);
+
     if (isEditMode && academy) {
       initializeForm();
     } else {
       // 새 학원 추가 시 기본값 설정
       setStartMonth(moment().format('YYYY-MM'));
     }
-  }, [academy]);
+  }, [academy, scheduleId]);
 
   const initializeForm = () => {
     if (!academy) return;
+    
+    console.log('📚 Initializing form with academy:', academy);
     
     setName(academy.name);
     setSubject(academy.subject);
@@ -179,7 +190,10 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
     setIsLoading(true);
 
     try {
+      console.log('📚 Saving academy for schedule:', scheduleId);
+
       const academyData: Omit<Academy, 'id' | 'created_at' | 'updated_at'> = {
+        schedule_id: scheduleId, // ✅ 스케줄 ID 포함
         name: name.trim(),
         subject,
         monthly_fee: monthlyFee ? Number(monthlyFee) : undefined,
@@ -199,13 +213,32 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
         del_yn: false,
       };
 
+      console.log('📚 Academy data to save:', academyData);
+
       if (isEditMode && academy) {
-        await DatabaseService.updateAcademy({ ...academyData, id: academy.id });
+        // 편집 모드 - academy_id와 schedule_id 모두 포함
+        const updatedAcademy: Academy = {
+          ...academyData,
+          id: academy.id,
+          created_at: academy.created_at,
+          updated_at: academy.updated_at,
+        };
+        
+        console.log('📚 Updating academy:', updatedAcademy);
+        await DatabaseService.updateAcademy(updatedAcademy);
+        console.log('✅ Academy updated successfully');
       } else {
-        await DatabaseService.createAcademy(academyData);
+        // 생성 모드
+        console.log('📚 Creating new academy');
+        const academyId = await DatabaseService.createAcademy(academyData);
+        console.log('✅ Academy created with ID:', academyId);
       }
 
-      onSave?.();
+      // 성공 처리
+      if (onSave) {
+        await onSave();
+      }
+      
       navigation.goBack();
       
       Alert.alert(
@@ -213,7 +246,7 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
         isEditMode ? '학원 정보가 수정되었습니다.' : '새 학원이 추가되었습니다.'
       );
     } catch (error) {
-      console.error('Error saving academy:', error);
+      console.error('❌ Error saving academy:', error);
       Alert.alert('오류', '저장 중 오류가 발생했습니다.');
     } finally {
       setIsLoading(false);
@@ -248,6 +281,14 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        {/* 현재 스케줄 정보 표시 */}
+        <View style={styles.scheduleInfo}>
+          <Ionicons name="information-circle-outline" size={16} color="#007AFF" />
+          <Text style={styles.scheduleInfoText}>
+            현재 활성 스케줄에 학원이 추가됩니다.
+          </Text>
+        </View>
+
         {/* 기본 정보 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>기본 정보</Text>
@@ -578,6 +619,21 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  scheduleInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E3F2FD',
+    margin: 15,
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  scheduleInfoText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#1976D2',
+    lineHeight: 16,
   },
   section: {
     backgroundColor: '#fff',

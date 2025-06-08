@@ -13,7 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import DatabaseService, { Academy } from '../services/DatabaseService';
+import DatabaseService, { Academy, Schedule } from '../services/DatabaseService';
 import { RootStackParamList } from '../../App';
 
 interface AcademyItem extends Academy {
@@ -29,24 +29,41 @@ interface Props {
 
 const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
   const [academies, setAcademies] = useState<Academy[]>([]);
+  const [currentSchedule, setCurrentSchedule] = useState<Schedule | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   // 화면 포커스될 때마다 데이터 새로고침
   useFocusEffect(
     useCallback(() => {
-      loadAcademies();
+      loadCurrentScheduleAndAcademies();
     }, [])
   );
 
-  const loadAcademies = async () => {
+  const loadCurrentScheduleAndAcademies = async () => {
     try {
       setIsLoading(true);
-      const academyList = await DatabaseService.getAcademies();
-      console.log('📚 Loaded academies:', academyList);
+      
+      // 1. 현재 활성 스케줄 조회
+      const activeSchedule = await DatabaseService.getActiveSchedule();
+      console.log('📚 Current active schedule:', activeSchedule);
+      
+      if (!activeSchedule) {
+        Alert.alert('알림', '활성화된 스케줄이 없습니다.\n먼저 스케줄을 생성해주세요.');
+        setAcademies([]);
+        setCurrentSchedule(null);
+        return;
+      }
+      
+      setCurrentSchedule(activeSchedule);
+      
+      // 2. 해당 스케줄의 학원 목록 조회
+      const academyList = await DatabaseService.getAcademiesBySchedule(activeSchedule.id!);
+      console.log(`📚 Loaded academies for schedule ${activeSchedule.id}:`, academyList);
       setAcademies(academyList);
+      
     } catch (error) {
-      console.error('Error loading academies:', error);
+      console.error('Error loading schedule and academies:', error);
       Alert.alert('오류', '학원 목록을 불러오는 중 오류가 발생했습니다.');
     } finally {
       setIsLoading(false);
@@ -55,14 +72,20 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadAcademies();
+    await loadCurrentScheduleAndAcademies();
     setRefreshing(false);
   }, []);
 
   const handleAddAcademy = () => {
+    if (!currentSchedule) {
+      Alert.alert('알림', '활성화된 스케줄이 없습니다.');
+      return;
+    }
+    
     navigation.navigate('AcademyEditScreen', {
       academy: undefined,
-      onSave: loadAcademies,
+      scheduleId: currentSchedule.id!, // ✅ 스케줄 ID 전달
+      onSave: loadCurrentScheduleAndAcademies,
     });
   };
 
@@ -88,7 +111,7 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
                     : academy.end_month
                 };
                 await DatabaseService.updateAcademy(updatedAcademy);
-                await loadAcademies(); // 목록 새로고침
+                await loadCurrentScheduleAndAcademies(); // 목록 새로고침
               } catch (error) {
                 console.error('Error updating academy status:', error);
                 Alert.alert('오류', '상태 변경 중 오류가 발생했습니다.');
@@ -114,7 +137,7 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
           onPress: async () => {
             try {
               await DatabaseService.deleteAcademy(academy.id);
-              await loadAcademies(); // 목록 새로고침
+              await loadCurrentScheduleAndAcademies(); // 목록 새로고침
             } catch (error) {
               console.error('Error deleting academy:', error);
               Alert.alert('오류', '학원 삭제 중 오류가 발생했습니다.');
@@ -126,9 +149,15 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleEditAcademy = (academy: Academy) => {
+    if (!currentSchedule) {
+      Alert.alert('알림', '활성화된 스케줄이 없습니다.');
+      return;
+    }
+    
     navigation.navigate('AcademyEditScreen', {
       academy,
-      onSave: loadAcademies,
+      scheduleId: currentSchedule.id!, // ✅ 스케줄 ID 전달
+      onSave: loadCurrentScheduleAndAcademies,
     });
   };
 
@@ -223,6 +252,9 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
       <Ionicons name="school-outline" size={80} color="#ccc" />
       <Text style={styles.emptyTitle}>등록된 학원이 없습니다</Text>
       <Text style={styles.emptySubtitle}>+ 버튼을 눌러 학원을 추가해보세요</Text>
+      {currentSchedule && (
+        <Text style={styles.scheduleInfo}>현재 스케줄: {currentSchedule.name}</Text>
+      )}
     </View>
   );
 
@@ -230,16 +262,42 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
     <View style={styles.listHeader}>
       <View style={styles.infoBox}>
         <Ionicons name="information-circle-outline" size={16} color="#007AFF" />
-        <Text style={styles.infoText}>학원에 대한 추가 정보 (학원비, 재료 등)를 관리합니다.</Text>
+        <Text style={styles.infoText}>
+          {currentSchedule 
+            ? `"${currentSchedule.name}" 스케줄의 학원 정보를 관리합니다.`
+            : '학원에 대한 추가 정보 (학원비, 재료 등)를 관리합니다.'
+          }
+        </Text>
       </View>
       
       {academies.length > 0 && (
         <View style={styles.statsContainer}>
-          <Text style={styles.statsTitle}>학원 ({academies.length})</Text>
+          <Text style={styles.statsTitle}>
+            학원 ({academies.length})
+            {currentSchedule && (
+              <Text style={styles.scheduleNameInStats}> - {currentSchedule.name}</Text>
+            )}
+          </Text>
         </View>
       )}
     </View>
   );
+
+  // 활성 스케줄이 없는 경우
+  if (!currentSchedule && !isLoading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>학원관리</Text>
+        </View>
+        <View style={styles.noScheduleState}>
+          <Ionicons name="calendar-outline" size={80} color="#ccc" />
+          <Text style={styles.noScheduleTitle}>활성화된 스케줄이 없습니다</Text>
+          <Text style={styles.noScheduleSubtitle}>먼저 시간표에서 스케줄을 생성해주세요</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -324,6 +382,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#333',
   },
+  scheduleNameInStats: {
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#666',
+  },
   academyCard: {
     backgroundColor: '#fff',
     marginHorizontal: 15,
@@ -404,6 +467,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999',
     marginTop: 8,
+  },
+  scheduleInfo: {
+    fontSize: 12,
+    color: '#007AFF',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  // 활성 스케줄이 없는 경우 스타일
+  noScheduleState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 100,
+  },
+  noScheduleTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 20,
+  },
+  noScheduleSubtitle: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
   },
 });
 
