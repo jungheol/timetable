@@ -29,7 +29,9 @@ export interface ScheduleSettings {
 
 // Navigation Types
 export type RootStackParamList = {
-  InitialSetup: undefined;
+  InitialSetup: {
+    onSetupComplete?: () => void;
+  } | undefined;
   Main: undefined;
   EventScreen: {
     event?: Event | null;
@@ -43,6 +45,10 @@ export type RootStackParamList = {
     academy?: Academy;
     onSave?: () => void;
   };
+  // 새 스케줄 생성을 위한 InitialSetupScreen 네비게이션
+  InitialSetupFromMain: {
+    isFromModal?: boolean;
+  } | undefined;
 };
 
 const Tab = createBottomTabNavigator();
@@ -87,7 +93,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   // 🔧 개발 모드 설정 (배포 시 false로 변경)
-  const DEVELOPMENT_MODE = true;  // true: 항상 초기설정 화면 / false: 정상 동작
+  const DEVELOPMENT_MODE = false;  // true: 항상 초기설정 화면 / false: 정상 동작
 
   useEffect(() => {
     checkScheduleExists();
@@ -147,6 +153,13 @@ export default function App() {
     }, 500);
   };
 
+  // 새 스케줄 생성 완료 처리
+  const handleNewScheduleComplete = () => {
+    console.log('🎉 New schedule created successfully');
+    // 메인 화면은 이미 표시되어 있으므로 추가 처리 없음
+    // TimeTableScreen에서 useFocusEffect를 통해 자동으로 새로고침됨
+  };
+
   // 로딩 상태 표시
   if (isLoading || isFirstTime === null) {
     return (
@@ -160,14 +173,22 @@ export default function App() {
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {isFirstTime ? (
+          // 최초 실행 시 초기 설정 화면
           <Stack.Screen name="InitialSetup">
             {(props) => (
-              <InitialSetupScreen {...props} onSetupComplete={handleSetupComplete} />
+              <InitialSetupScreen 
+                onSetupComplete={handleSetupComplete}
+                navigation={props.navigation}
+                route={props.route}
+              />
             )}
           </Stack.Screen>
         ) : (
           <>
+            {/* 메인 앱 화면들 */}
             <Stack.Screen name="Main" component={TabNavigator} />
+            
+            {/* 일정 편집 화면 */}
             <Stack.Screen 
               name="EventScreen" 
               component={EventScreen} 
@@ -177,17 +198,37 @@ export default function App() {
                 gestureEnabled: true,
               }} 
             />
+            
+            {/* 학원 관리 화면 */}
             <Stack.Screen 
               name="AcademyManagementScreen" 
               component={AcademyManagementScreen}
               options={{ headerShown: false }}
             />
             
+            {/* 학원 편집 화면 */}
             <Stack.Screen 
               name="AcademyEditScreen" 
               component={AcademyEditScreen}
               options={{ headerShown: false }}
             />
+            
+            {/* 새 스케줄 생성 화면 (메인에서 접근) */}
+            <Stack.Screen 
+              name="InitialSetupFromMain"
+              options={{ 
+                headerShown: false,
+                presentation: 'modal',
+                gestureEnabled: true,
+              }}
+            >
+              {(props) => (
+                <InitialSetupScreen 
+                  navigation={props.navigation}
+                  route={props.route}
+                />
+              )}
+            </Stack.Screen>
           </>
         )}
       </Stack.Navigator>

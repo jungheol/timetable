@@ -16,10 +16,12 @@ import HolidayService from '../services/HolidayService';
 import CustomPicker from '../components/CustomPicker';
 
 interface Props {
-  onSetupComplete: () => void;
+  onSetupComplete?: () => void;
+  navigation?: any;
+  route?: any;
 }
 
-const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
+const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete, navigation, route }) => {
   const [timeUnit, setTimeUnit] = useState<'30min' | '1hour'>('1hour');
   const [startTime, setStartTime] = useState('09:00');
   const [endTime, setEndTime] = useState('18:00');
@@ -41,7 +43,7 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
   // 백그라운드에서 공휴일 데이터 초기화
   const initializeHolidaysInBackground = async () => {
     try {
-      console.log('🇰🇷 [Setup] Starting background holiday initialization...');
+      console.log('🎌 [Setup] Starting background holiday initialization...');
       setIsLoadingHolidays(true);
       setHolidayLoadStep('공휴일 데이터를 확인하는 중...');
       
@@ -52,8 +54,8 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
       const currentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
       const nextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
       
-      console.log(`🇰🇷 [Setup] Current year (${currentYear}) holidays in DB: ${currentYearHolidays.length}`);
-      console.log(`🇰🇷 [Setup] Next year (${nextYear}) holidays in DB: ${nextYearHolidays.length}`);
+      console.log(`🎌 [Setup] Current year (${currentYear}) holidays in DB: ${currentYearHolidays.length}`);
+      console.log(`🎌 [Setup] Next year (${nextYear}) holidays in DB: ${nextYearHolidays.length}`);
       
       let needsCurrentYear = currentYearHolidays.length === 0;
       let needsNextYear = nextYearHolidays.length === 0;
@@ -62,25 +64,25 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
         setHolidayLoadStep('API에서 공휴일 정보를 가져오는 중...');
         
         if (needsCurrentYear) {
-          console.log(`🇰🇷 [Setup] Fetching ${currentYear} holidays from API...`);
+          console.log(`🎌 [Setup] Fetching ${currentYear} holidays from API...`);
           try {
             const fetchedCurrentYear = await HolidayService.getHolidaysForYear(currentYear);
-            console.log(`🇰🇷 [Setup] Fetched ${fetchedCurrentYear.length} holidays for ${currentYear}`);
+            console.log(`🎌 [Setup] Fetched ${fetchedCurrentYear.length} holidays for ${currentYear}`);
             setHolidayLoadStep(`${currentYear}년 공휴일 ${fetchedCurrentYear.length}개 로드 완료`);
           } catch (error) {
-            console.warn(`🇰🇷 [Setup] Failed to fetch ${currentYear} holidays:`, error);
+            console.warn(`🎌 [Setup] Failed to fetch ${currentYear} holidays:`, error);
             setHolidayLoadStep(`${currentYear}년 공휴일 로드 실패`);
           }
         }
         
         if (needsNextYear) {
-          console.log(`🇰🇷 [Setup] Fetching ${nextYear} holidays from API...`);
+          console.log(`🎌 [Setup] Fetching ${nextYear} holidays from API...`);
           try {
             const fetchedNextYear = await HolidayService.getHolidaysForYear(nextYear);
-            console.log(`🇰🇷 [Setup] Fetched ${fetchedNextYear.length} holidays for ${nextYear}`);
+            console.log(`🎌 [Setup] Fetched ${fetchedNextYear.length} holidays for ${nextYear}`);
             setHolidayLoadStep(`${nextYear}년 공휴일 ${fetchedNextYear.length}개 로드 완료`);
           } catch (error) {
-            console.warn(`🇰🇷 [Setup] Failed to fetch ${nextYear} holidays:`, error);
+            console.warn(`🎌 [Setup] Failed to fetch ${nextYear} holidays:`, error);
             setHolidayLoadStep(`${nextYear}년 공휴일 로드 실패`);
           }
         }
@@ -88,19 +90,19 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
         setHolidayLoadStep('공휴일 데이터 준비 완료');
       } else {
         setHolidayLoadStep('기존 공휴일 데이터 사용');
-        console.log('🇰🇷 [Setup] Using existing holiday data from DB');
+        console.log('🎌 [Setup] Using existing holiday data from DB');
       }
       
       // 최종 확인
       const finalCurrentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
       const finalNextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
       
-      console.log(`🇰🇷 [Setup] Final holiday count - ${currentYear}: ${finalCurrentYearHolidays.length}, ${nextYear}: ${finalNextYearHolidays.length}`);
+      console.log(`🎌 [Setup] Final holiday count - ${currentYear}: ${finalCurrentYearHolidays.length}, ${nextYear}: ${finalNextYearHolidays.length}`);
       
       setHolidayLoadComplete(true);
       
     } catch (error) {
-      console.error('🇰🇷 [Setup] Holiday initialization error:', error);
+      console.error('🎌 [Setup] Holiday initialization error:', error);
       setHolidayLoadStep('공휴일 데이터 로드 실패 (선택사항)');
       setHolidayLoadComplete(true); // 실패해도 완료로 처리
     } finally {
@@ -184,21 +186,29 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
       Alert.alert('오류', '시작 시간은 종료 시간보다 빨라야 합니다.');
       return;
     }
-
+  
     setIsLoading(true);
-
+  
     try {
       console.log('🚀 [Setup] Starting schedule setup...');
-
-      // 1. 기존 활성 일정표를 비활성화
+  
+      // 1. 먼저 모든 기존 스케줄을 비활성화 (더 확실한 방법)
       const existingSchedule = await DatabaseService.getActiveSchedule();
+      console.log('🔍 [Setup] Existing active schedule:', existingSchedule);
+      
       if (existingSchedule) {
+        console.log('🔄 [Setup] Deactivating existing schedule:', existingSchedule.name);
         await DatabaseService.updateSchedule({
           ...existingSchedule,
           is_active: false,
         });
+        console.log('✅ [Setup] Existing schedule deactivated');
+        
+        // 비활성화 확인
+        const checkDeactivated = await DatabaseService.getActiveSchedule();
+        console.log('🔍 [Setup] After deactivation check:', checkDeactivated);
       }
-
+  
       // 2. 새 일정표 생성
       const newSchedule: Omit<Schedule, 'id' | 'created_at' | 'updated_at'> = {
         name: '내 일정표',
@@ -209,16 +219,49 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
         time_unit: timeUnit,
         del_yn: false,
       };
-
-      await DatabaseService.createSchedule(newSchedule);
+  
+      console.log('📝 [Setup] Creating new schedule:', newSchedule);
+      const newScheduleId = await DatabaseService.createSchedule(newSchedule);
+      console.log('✅ [Setup] New schedule created with ID:', newScheduleId);
+      
+      // 3. 약간의 지연 후 검증 (DB 업데이트 완료 대기)
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // 4. 생성된 스케줄이 실제로 활성화되었는지 확인
+      const verifySchedule = await DatabaseService.getActiveSchedule();
+      console.log('🔍 [Setup] Verification - Active schedule after creation:', verifySchedule);
+      
+      if (!verifySchedule || verifySchedule.id !== newScheduleId) {
+        console.error('❌ [Setup] Schedule activation verification failed!');
+        console.error('Expected ID:', newScheduleId, 'Got:', verifySchedule?.id);
+        
+        // 강제로 활성화 시도
+        console.log('🔧 [Setup] Attempting to force activate new schedule...');
+        const createdSchedule = await DatabaseService.getScheduleById(newScheduleId);
+        if (createdSchedule) {
+          await DatabaseService.updateSchedule({
+            ...createdSchedule,
+            is_active: true,
+          });
+          
+          // 재검증
+          const reVerifySchedule = await DatabaseService.getActiveSchedule();
+          console.log('🔍 [Setup] Re-verification after force activation:', reVerifySchedule);
+          
+          if (!reVerifySchedule || reVerifySchedule.id !== newScheduleId) {
+            throw new Error('Schedule activation failed even after force activation');
+          }
+        } else {
+          throw new Error('Created schedule not found');
+        }
+      }
       
       console.log('✅ [Setup] Schedule setup completed successfully');
       
-      // 공휴일 로딩이 아직 진행 중이라면 완료될 때까지 대기 (최대 3초)
+      // 공휴일 로딩 대기...
       if (!holidayLoadComplete && isLoadingHolidays) {
-        console.log('🇰🇷 [Setup] Waiting for holiday loading to complete...');
+        console.log('🎌 [Setup] Waiting for holiday loading to complete...');
         
-        // 최대 3초 대기
         const maxWaitTime = 3000;
         const startWaitTime = Date.now();
         
@@ -227,14 +270,22 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
         }
         
         if (holidayLoadComplete) {
-          console.log('🇰🇷 [Setup] Holiday loading completed during wait');
+          console.log('🎌 [Setup] Holiday loading completed during wait');
         } else {
-          console.log('🇰🇷 [Setup] Holiday loading timeout, proceeding anyway');
+          console.log('🎌 [Setup] Holiday loading timeout, proceeding anyway');
         }
       }
       
       // 설정 완료 콜백 호출
-      onSetupComplete();
+      if (route?.params) {
+        console.log('🎉 [Setup] Modal completion - going back...');
+        navigation.goBack();
+      } else if (onSetupComplete) {
+        console.log('🎉 [Setup] Main completion callback...');
+        onSetupComplete();
+      } else {
+        console.log('🎉 [Setup] No callback provided, setup completed');
+      }
     } catch (error) {
       console.error('❌ [Setup] Error during setup:', error);
       Alert.alert('오류', '일정표를 저장하는 중 오류가 발생했습니다.');

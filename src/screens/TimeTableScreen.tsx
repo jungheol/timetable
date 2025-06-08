@@ -8,6 +8,8 @@ import {
   ScrollView,
   Dimensions,
   Alert,
+  Modal,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { StackNavigationProp } from '@react-navigation/stack';
@@ -34,20 +36,105 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [holidays, setHolidays] = useState<{ [key: string]: Holiday }>({});
   const [isLoadingHolidays, setIsLoadingHolidays] = useState(false);
+  
+  // 스케줄 관리 상태
+  const [showScheduleDropdown, setShowScheduleDropdown] = useState(false);
+  const [allSchedules, setAllSchedules] = useState<Schedule[]>([]);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const [editScheduleName, setEditScheduleName] = useState('');
 
   useEffect(() => {
     loadSchedule();
+    loadAllSchedules();
   }, []);
 
   // 화면에 포커스될 때마다 이벤트와 공휴일 새로고침
   useFocusEffect(
     useCallback(() => {
-      if (schedule) {
-        loadEvents();
-        loadHolidaysForCurrentPeriod();
-      }
-    }, [schedule, currentWeek])
+      const handleFocus = async () => {
+        console.log('🔍 [TimeTable] Screen focused - checking for schedule changes...');
+        
+        // 스케줄 목록 새로고침 (새 스케줄이 추가되었을 수 있음)
+        await loadAllSchedules();
+        
+        // 활성 스케줄 확인 및 업데이트
+        const currentActiveSchedule = await DatabaseService.getActiveSchedule();
+        console.log('🔍 [TimeTable] Current active schedule from DB:', currentActiveSchedule);
+        console.log('🔍 [TimeTable] Current schedule in state:', schedule);
+        
+        if (currentActiveSchedule) {
+          // 새로운 활성 스케줄이 있는 경우
+          if (!schedule || schedule.id !== currentActiveSchedule.id) {
+            console.log('🔄 [TimeTable] New active schedule detected:', currentActiveSchedule.name);
+            console.log('🔄 [TimeTable] Previous schedule was:', schedule?.name || 'none');
+            
+            setSchedule(currentActiveSchedule);
+            
+            // 새 스케줄에 맞는 주간으로 포커싱
+            const focusWeek = calculateFocusWeek(currentActiveSchedule);
+            setCurrentWeek(focusWeek);
+            
+            console.log('📅 [TimeTable] Focusing to week:', focusWeek.format('YYYY-MM-DD'));
+            
+            // 이벤트와 공휴일도 새로 로드
+            setTimeout(() => {
+              loadEvents();
+              loadHolidaysForCurrentPeriod();
+            }, 100);
+            
+            return; // 새 스케줄로 전환했으므로 여기서 리턴
+          } else {
+            console.log('✅ [TimeTable] Same schedule, no change needed');
+          }
+        } else {
+          console.log('⚠️ [TimeTable] No active schedule found in DB');
+        }
+  
+        // 기존 스케줄이 있는 경우에만 이벤트와 공휴일 로드
+        if (schedule || currentActiveSchedule) {
+          loadEvents();
+          loadHolidaysForCurrentPeriod();
+        }
+      };
+      
+      handleFocus().catch(error => {
+        console.error('❌ [TimeTable] Error in focus handler:', error);
+      });
+    }, [schedule, currentWeek]) // dependencies 확인
   );
+
+  // 새 스케줄에 맞는 포커스 주간 계산
+  const calculateFocusWeek = (newSchedule: Schedule): moment.Moment => {
+    const today = moment();
+    const todayOfWeek = today.day(); // 0=일요일, 1=월요일, ..., 6=토요일
+    
+    console.log('📅 Calculating focus week for schedule:', {
+      scheduleName: newSchedule.name,
+      showWeekend: newSchedule.show_weekend,
+      todayOfWeek,
+      today: today.format('YYYY-MM-DD ddd')
+    });
+
+    // 주말을 표시하는 스케줄인 경우, 오늘이 포함된 주간으로
+    if (newSchedule.show_weekend) {
+      console.log('📅 Weekend schedule - showing current week');
+      return today.clone();
+    }
+    
+    // 주말을 표시하지 않는 스케줄인 경우
+    // 오늘이 주말(토요일=6, 일요일=0)이면 다음 월요일이 있는 주간으로
+    if (todayOfWeek === 0 || todayOfWeek === 6) {
+      // 다음 월요일 찾기
+      const nextMonday = today.clone().add(1, 'week').startOf('isoWeek');
+      console.log('📅 Weekend day + weekday-only schedule - showing next Monday week:', nextMonday.format('YYYY-MM-DD'));
+      return nextMonday;
+    }
+    
+    // 오늘이 평일이면 오늘이 포함된 주간으로
+    console.log('📅 Weekday + weekday-only schedule - showing current week');
+    return today.clone();
+  };
 
   const loadSchedule = async () => {
     try {
@@ -55,6 +142,15 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       setSchedule(activeSchedule);
     } catch (error) {
       console.error('Error loading schedule:', error);
+    }
+  };
+
+  const loadAllSchedules = async () => {
+    try {
+      const schedules = await DatabaseService.getAllSchedules();
+      setAllSchedules(schedules);
+    } catch (error) {
+      console.error('Error loading all schedules:', error);
     }
   };
 
@@ -148,6 +244,88 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       console.error('Error loading events:', error);
     }
   }, [schedule, currentWeek]);
+
+  // 스케줄 변경 처리
+  const handleScheduleChange = async (selectedSchedule: Schedule) => {
+    try {
+      // 기존 활성 스케줄을 비활성화
+      if (schedule) {
+        await DatabaseService.updateSchedule({
+          ...schedule,
+          is_active: false,
+        });
+      }
+
+      // 선택한 스케줄을 활성화
+      await DatabaseService.updateSchedule({
+        ...selectedSchedule,
+        is_active: true,
+      });
+
+      setSchedule(selectedSchedule);
+      setShowScheduleDropdown(false);
+      
+      // 스케줄 변경 시에도 적절한 주간으로 포커싱
+      const focusWeek = calculateFocusWeek(selectedSchedule);
+      setCurrentWeek(focusWeek);
+      
+      console.log(`✅ Switched to schedule: ${selectedSchedule.name}`);
+    } catch (error) {
+      console.error('Error switching schedule:', error);
+      Alert.alert('오류', '스케줄 변경 중 오류가 발생했습니다.');
+    }
+  };
+
+  // 새 스케줄 생성으로 이동
+  const handleCreateNewSchedule = () => {
+    setShowScheduleDropdown(false);
+    navigation.navigate('InitialSetupFromMain', {
+      // 간단한 플래그만 전달하고 실제 콜백은 useFocusEffect에서 처리
+      isFromModal: true
+    });
+  };
+
+  // 스케줄 이름 수정 시작
+  const handleEditScheduleName = (scheduleToEdit: Schedule) => {
+    setEditingSchedule(scheduleToEdit);
+    setEditScheduleName(scheduleToEdit.name);
+    setShowEditModal(true);
+    setShowScheduleDropdown(false);
+  };
+
+  // 스케줄 이름 수정 완료
+  const handleSaveScheduleName = async () => {
+    if (!editingSchedule || !editScheduleName.trim()) {
+      Alert.alert('알림', '스케줄 이름을 입력해주세요.');
+      return;
+    }
+
+    try {
+      const updatedSchedule = {
+        ...editingSchedule,
+        name: editScheduleName.trim(),
+      };
+
+      await DatabaseService.updateSchedule(updatedSchedule);
+      
+      // 현재 활성 스케줄이 수정된 경우 업데이트
+      if (schedule && schedule.id === editingSchedule.id) {
+        setSchedule(updatedSchedule);
+      }
+      
+      // 스케줄 목록 새로고침
+      await loadAllSchedules();
+      
+      setShowEditModal(false);
+      setEditingSchedule(null);
+      setEditScheduleName('');
+      
+      console.log(`✅ Schedule name updated: ${editScheduleName}`);
+    } catch (error) {
+      console.error('Error updating schedule name:', error);
+      Alert.alert('오류', '스케줄 이름 수정 중 오류가 발생했습니다.');
+    }
+  };
 
   // 🧪 디버깅용 테스트 메서드 추가
   const testRecurringEvents = useCallback(async () => {
@@ -355,7 +533,12 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const goToToday = () => {
-    setCurrentWeek(moment());
+    if (schedule) {
+      const focusWeek = calculateFocusWeek(schedule);
+      setCurrentWeek(focusWeek);
+    } else {
+      setCurrentWeek(moment());
+    }
   };
 
   if (!schedule) {
@@ -376,10 +559,16 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     <SafeAreaView style={styles.container}>
       {/* 헤더 */}
       <View style={styles.header}>
-        <TouchableOpacity>
-          <Ionicons name="create-outline" size={24} color="#007AFF" />
+        <TouchableOpacity onPress={() => setShowScheduleDropdown(true)}>
+          <View style={styles.scheduleButton}>
+            <Ionicons name="create-outline" size={24} color="#007AFF" />
+            <Text style={styles.scheduleButtonText}>{schedule.name}</Text>
+            <Ionicons name="chevron-down" size={16} color="#007AFF" />
+          </View>
         </TouchableOpacity>
+        
         <Text style={styles.headerTitle}>시간표</Text>
+        
         <View style={styles.headerRight}>
           <TouchableOpacity onPress={handleRefreshHolidays} disabled={isLoadingHolidays}>
             <Ionicons 
@@ -508,6 +697,105 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
           </View>
         ))}
       </ScrollView>
+
+      {/* 스케줄 드롭다운 모달 */}
+      <Modal
+        visible={showScheduleDropdown}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowScheduleDropdown(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay}
+          onPress={() => setShowScheduleDropdown(false)}
+        >
+          <View style={styles.dropdownContainer}>
+            <Text style={styles.dropdownTitle}>스케줄 선택</Text>
+            
+            <ScrollView style={styles.scheduleList} showsVerticalScrollIndicator={false}>
+              {allSchedules.map((scheduleItem) => (
+                <View key={scheduleItem.id} style={styles.scheduleItem}>
+                  <TouchableOpacity
+                    style={[
+                      styles.scheduleNameButton,
+                      scheduleItem.id === schedule.id && styles.activeScheduleItem
+                    ]}
+                    onPress={() => handleScheduleChange(scheduleItem)}
+                  >
+                    <Text style={[
+                      styles.scheduleNameText,
+                      scheduleItem.id === schedule.id && styles.activeScheduleText
+                    ]}>
+                      {scheduleItem.name}
+                    </Text>
+                    {scheduleItem.id === schedule.id && (
+                      <Ionicons name="checkmark" size={20} color="#007AFF" />
+                    )}
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={styles.editButton}
+                    onPress={() => handleEditScheduleName(scheduleItem)}
+                  >
+                    <Ionicons name="create-outline" size={20} color="#666" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+            
+            <TouchableOpacity
+              style={styles.createButton}
+              onPress={handleCreateNewSchedule}
+            >
+              <Ionicons name="add" size={20} color="#fff" />
+              <Text style={styles.createButtonText}>새 스케줄 만들기</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 스케줄 이름 수정 모달 */}
+      <Modal
+        visible={showEditModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowEditModal(false)}
+      >
+        <View style={styles.editModalOverlay}>
+          <View style={styles.editModalContainer}>
+            <Text style={styles.editModalTitle}>스케줄 이름 수정</Text>
+            
+            <TextInput
+              style={styles.editInput}
+              value={editScheduleName}
+              onChangeText={setEditScheduleName}
+              placeholder="스케줄 이름을 입력하세요"
+              autoFocus={true}
+              maxLength={50}
+            />
+            
+            <View style={styles.editModalButtons}>
+              <TouchableOpacity
+                style={[styles.editModalButton, styles.cancelButton]}
+                onPress={() => {
+                  setShowEditModal(false);
+                  setEditingSchedule(null);
+                  setEditScheduleName('');
+                }}
+              >
+                <Text style={styles.cancelButtonText}>취소</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={[styles.editModalButton, styles.saveButton]}
+                onPress={handleSaveScheduleName}
+              >
+                <Text style={styles.saveButtonText}>저장</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -530,6 +818,23 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+  },
+  scheduleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#f0f8ff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#007AFF',
+    gap: 8,
+  },
+  scheduleButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#007AFF',
+    maxWidth: 100,
   },
   headerTitle: {
     fontSize: 18,
@@ -685,6 +990,157 @@ const styles = StyleSheet.create({
   recurringIndicator: {
     fontSize: 8,
     opacity: 0.8,
+  },
+  // 스케줄 드롭다운 모달 스타일
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-start',
+    paddingTop: 100,
+    paddingHorizontal: 20,
+  },
+  dropdownContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 20,
+    paddingHorizontal: 16,
+    maxHeight: 400,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  dropdownTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  scheduleList: {
+    maxHeight: 250,
+  },
+  scheduleItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  scheduleNameButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  activeScheduleItem: {
+    backgroundColor: '#f0f8ff',
+    borderColor: '#007AFF',
+  },
+  scheduleNameText: {
+    fontSize: 16,
+    color: '#333',
+    fontWeight: '500',
+    flex: 1,
+  },
+  activeScheduleText: {
+    color: '#007AFF',
+    fontWeight: '600',
+  },
+  editButton: {
+    marginLeft: 8,
+    padding: 8,
+    borderRadius: 6,
+    backgroundColor: '#f0f0f0',
+  },
+  createButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#007AFF',
+    paddingVertical: 14,
+    borderRadius: 8,
+    marginTop: 16,
+    gap: 8,
+  },
+  createButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  // 스케줄 이름 수정 모달 스타일
+  editModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  editModalContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 24,
+    width: '100%',
+    maxWidth: 350,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  editModalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  editInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: '#333',
+    marginBottom: 24,
+  },
+  editModalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  editModalButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  cancelButton: {
+    backgroundColor: '#f0f0f0',
+  },
+  cancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+  },
+  saveButton: {
+    backgroundColor: '#007AFF',
+  },
+  saveButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
   },
 });
 

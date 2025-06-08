@@ -281,10 +281,13 @@ class DatabaseService {
   async updateSchedule(schedule: Schedule): Promise<void> {
     try {
       const db = await this.ensureDbConnection();
+      
+      console.log('🔄 [DB] Updating schedule:', schedule);
+      
       await db.runAsync(
         `UPDATE schedules SET 
          name = ?, start_time = ?, end_time = ?, show_weekend = ?, 
-         time_unit = ?, updated_at = CURRENT_TIMESTAMP
+         time_unit = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [
           schedule.name, 
@@ -292,14 +295,108 @@ class DatabaseService {
           schedule.end_time, 
           schedule.show_weekend ? 1 : 0,
           schedule.time_unit || '1hour',
+          schedule.is_active ? 1 : 0,  // ✅ is_active 추가!
           schedule.id
         ]
       );
+      
+      console.log('✅ [DB] Schedule updated successfully');
+      
+      // 업데이트 후 확인
+      const updatedSchedule = await db.getFirstAsync<Schedule>(
+        'SELECT * FROM schedules WHERE id = ?',
+        [schedule.id]
+      );
+      console.log('🔍 [DB] Updated schedule verification:', updatedSchedule);
+      
     } catch (error) {
-      console.error('Error updating schedule:', error);
+      console.error('❌ [DB] Error updating schedule:', error);
       throw error;
     }
   }
+
+  // 모든 스케줄 조회 (삭제되지 않은 것만)
+async getAllSchedules(): Promise<Schedule[]> {
+  try {
+    const db = await this.ensureDbConnection();
+    const result = await db.getAllAsync<Schedule>(
+      'SELECT * FROM schedules WHERE del_yn = 0 ORDER BY created_at DESC'
+    );
+    return result;
+  } catch (error) {
+    console.error('Error getting all schedules:', error);
+    throw error;
+  }
+}
+
+async getScheduleById(id: number): Promise<Schedule | null> {
+  try {
+    const db = await this.ensureDbConnection();
+    const result = await db.getFirstAsync<Schedule>(
+      'SELECT * FROM schedules WHERE id = ? AND del_yn = 0',
+      [id]
+    );
+    return result || null;
+  } catch (error) {
+    console.error('Error getting schedule by id:', error);
+    throw error;
+  }
+}
+
+// 특정 스케줄을 활성화하고 다른 스케줄들을 비활성화
+async setActiveSchedule(scheduleId: number): Promise<void> {
+  try {
+    const db = await this.ensureDbConnection();
+    
+    // 먼저 모든 스케줄을 비활성화
+    await db.runAsync('UPDATE schedules SET is_active = 0 WHERE del_yn = 0');
+    
+    // 선택한 스케줄만 활성화
+    await db.runAsync('UPDATE schedules SET is_active = 1 WHERE id = ? AND del_yn = 0', [scheduleId]);
+    
+    console.log(`✅ Schedule ${scheduleId} set as active`);
+  } catch (error) {
+    console.error('Error setting active schedule:', error);
+    throw error;
+  }
+}
+
+// 스케줄 삭제 (논리적 삭제)
+async deleteSchedule(id: number): Promise<void> {
+  try {
+    const db = await this.ensureDbConnection();
+    
+    // 삭제하려는 스케줄이 활성 스케줄인지 확인
+    const scheduleToDelete = await db.getFirstAsync<Schedule>(
+      'SELECT * FROM schedules WHERE id = ? AND del_yn = 0',
+      [id]
+    );
+    
+    if (!scheduleToDelete) {
+      throw new Error('Schedule not found');
+    }
+    
+    // 스케줄을 논리적으로 삭제
+    await db.runAsync('UPDATE schedules SET del_yn = 1 WHERE id = ?', [id]);
+    
+    // 만약 삭제된 스케줄이 활성 스케줄이었다면, 다른 스케줄을 활성화
+    if (scheduleToDelete.is_active) {
+      const remainingSchedules = await db.getAllAsync<Schedule>(
+        'SELECT * FROM schedules WHERE del_yn = 0 ORDER BY created_at DESC LIMIT 1'
+      );
+      
+      if (remainingSchedules.length > 0) {
+        await db.runAsync('UPDATE schedules SET is_active = 1 WHERE id = ?', [remainingSchedules[0].id]);
+        console.log(`✅ Activated schedule ${remainingSchedules[0].id} after deletion`);
+      }
+    }
+    
+    console.log(`✅ Schedule ${id} deleted`);
+  } catch (error) {
+    console.error('Error deleting schedule:', error);
+    throw error;
+  }
+}
 
   // 학원 관리
   async getAcademies(): Promise<Academy[]> {
