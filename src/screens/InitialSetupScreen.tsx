@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,10 +7,12 @@ import {
   SafeAreaView,
   Alert,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import moment from 'moment';
 import DatabaseService, { Schedule } from '../services/DatabaseService';
+import HolidayService from '../services/HolidayService';
 import CustomPicker from '../components/CustomPicker';
 
 interface Props {
@@ -25,7 +27,86 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
+  
+  // 공휴일 로딩 상태
+  const [isLoadingHolidays, setIsLoadingHolidays] = useState(false);
+  const [holidayLoadStep, setHolidayLoadStep] = useState('');
+  const [holidayLoadComplete, setHolidayLoadComplete] = useState(false);
 
+  // 컴포넌트 마운트 시 백그라운드에서 공휴일 로딩 시작
+  useEffect(() => {
+    initializeHolidaysInBackground();
+  }, []);
+
+  // 백그라운드에서 공휴일 데이터 초기화
+  const initializeHolidaysInBackground = async () => {
+    try {
+      console.log('🇰🇷 [Setup] Starting background holiday initialization...');
+      setIsLoadingHolidays(true);
+      setHolidayLoadStep('공휴일 데이터를 확인하는 중...');
+      
+      // DB에서 현재 연도와 다음 연도 공휴일 확인
+      const currentYear = new Date().getFullYear();
+      const nextYear = currentYear + 1;
+      
+      const currentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
+      const nextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
+      
+      console.log(`🇰🇷 [Setup] Current year (${currentYear}) holidays in DB: ${currentYearHolidays.length}`);
+      console.log(`🇰🇷 [Setup] Next year (${nextYear}) holidays in DB: ${nextYearHolidays.length}`);
+      
+      let needsCurrentYear = currentYearHolidays.length === 0;
+      let needsNextYear = nextYearHolidays.length === 0;
+      
+      if (needsCurrentYear || needsNextYear) {
+        setHolidayLoadStep('API에서 공휴일 정보를 가져오는 중...');
+        
+        if (needsCurrentYear) {
+          console.log(`🇰🇷 [Setup] Fetching ${currentYear} holidays from API...`);
+          try {
+            const fetchedCurrentYear = await HolidayService.getHolidaysForYear(currentYear);
+            console.log(`🇰🇷 [Setup] Fetched ${fetchedCurrentYear.length} holidays for ${currentYear}`);
+            setHolidayLoadStep(`${currentYear}년 공휴일 ${fetchedCurrentYear.length}개 로드 완료`);
+          } catch (error) {
+            console.warn(`🇰🇷 [Setup] Failed to fetch ${currentYear} holidays:`, error);
+            setHolidayLoadStep(`${currentYear}년 공휴일 로드 실패`);
+          }
+        }
+        
+        if (needsNextYear) {
+          console.log(`🇰🇷 [Setup] Fetching ${nextYear} holidays from API...`);
+          try {
+            const fetchedNextYear = await HolidayService.getHolidaysForYear(nextYear);
+            console.log(`🇰🇷 [Setup] Fetched ${fetchedNextYear.length} holidays for ${nextYear}`);
+            setHolidayLoadStep(`${nextYear}년 공휴일 ${fetchedNextYear.length}개 로드 완료`);
+          } catch (error) {
+            console.warn(`🇰🇷 [Setup] Failed to fetch ${nextYear} holidays:`, error);
+            setHolidayLoadStep(`${nextYear}년 공휴일 로드 실패`);
+          }
+        }
+        
+        setHolidayLoadStep('공휴일 데이터 준비 완료');
+      } else {
+        setHolidayLoadStep('기존 공휴일 데이터 사용');
+        console.log('🇰🇷 [Setup] Using existing holiday data from DB');
+      }
+      
+      // 최종 확인
+      const finalCurrentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
+      const finalNextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
+      
+      console.log(`🇰🇷 [Setup] Final holiday count - ${currentYear}: ${finalCurrentYearHolidays.length}, ${nextYear}: ${finalNextYearHolidays.length}`);
+      
+      setHolidayLoadComplete(true);
+      
+    } catch (error) {
+      console.error('🇰🇷 [Setup] Holiday initialization error:', error);
+      setHolidayLoadStep('공휴일 데이터 로드 실패 (선택사항)');
+      setHolidayLoadComplete(true); // 실패해도 완료로 처리
+    } finally {
+      setIsLoadingHolidays(false);
+    }
+  };
   // timeUnit에 따른 시간 옵션 생성 (메모화)
   const timeOptions = useMemo(() => {
     const options: string[] = [];
@@ -95,6 +176,9 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
     setShowEndTimePicker(false);
   };
 
+  // 공휴일 데이터 초기화 (제거 - 이제 백그라운드에서 처리)
+  // const initializeHolidays = async () => { ... } 
+
   const handleSave = async () => {
     if (startTime >= endTime) {
       Alert.alert('오류', '시작 시간은 종료 시간보다 빨라야 합니다.');
@@ -104,7 +188,9 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
     setIsLoading(true);
 
     try {
-      // 기존 활성 일정표를 비활성화
+      console.log('🚀 [Setup] Starting schedule setup...');
+
+      // 1. 기존 활성 일정표를 비활성화
       const existingSchedule = await DatabaseService.getActiveSchedule();
       if (existingSchedule) {
         await DatabaseService.updateSchedule({
@@ -113,7 +199,7 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
         });
       }
 
-      // 새 일정표 생성
+      // 2. 새 일정표 생성
       const newSchedule: Omit<Schedule, 'id' | 'created_at' | 'updated_at'> = {
         name: '내 일정표',
         start_time: startTime,
@@ -126,15 +212,54 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
 
       await DatabaseService.createSchedule(newSchedule);
       
+      console.log('✅ [Setup] Schedule setup completed successfully');
+      
+      // 공휴일 로딩이 아직 진행 중이라면 완료될 때까지 대기 (최대 3초)
+      if (!holidayLoadComplete && isLoadingHolidays) {
+        console.log('🇰🇷 [Setup] Waiting for holiday loading to complete...');
+        
+        // 최대 3초 대기
+        const maxWaitTime = 3000;
+        const startWaitTime = Date.now();
+        
+        while (!holidayLoadComplete && (Date.now() - startWaitTime) < maxWaitTime) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        if (holidayLoadComplete) {
+          console.log('🇰🇷 [Setup] Holiday loading completed during wait');
+        } else {
+          console.log('🇰🇷 [Setup] Holiday loading timeout, proceeding anyway');
+        }
+      }
+      
       // 설정 완료 콜백 호출
       onSetupComplete();
     } catch (error) {
-      console.error('Error saving schedule:', error);
+      console.error('❌ [Setup] Error during setup:', error);
       Alert.alert('오류', '일정표를 저장하는 중 오류가 발생했습니다.');
     } finally {
       setIsLoading(false);
     }
   };
+
+  const LoadingIndicator = () => (
+    <View style={styles.loadingOverlay}>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#007AFF" />
+        <Text style={styles.loadingTitle}>설정을 완료하는 중...</Text>
+        <Text style={styles.loadingText}>일정표 저장 중</Text>
+        {!holidayLoadComplete && (
+          <Text style={styles.loadingSubText}>
+            (공휴일 데이터는 백그라운드에서 처리됩니다)
+          </Text>
+        )}
+        <Text style={styles.loadingDescription}>
+          잠시만 기다려주세요
+        </Text>
+      </View>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -272,9 +397,30 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
           disabled={isLoading}
         >
           <Text style={styles.saveButtonText}>
-            {isLoading ? '저장 중...' : '설정 완료'}
+            {isLoading ? '설정 중...' : '설정 완료'}
           </Text>
         </TouchableOpacity>
+
+        {/* 설정 완료 시 공휴일 로딩에 대한 안내 */}
+        <View style={styles.holidayNoticeContainer}>
+          <Text style={styles.holidayNotice}>
+            💡 공휴일 정보를 백그라운드에서 자동으로 로드합니다.
+          </Text>
+          {isLoadingHolidays && (
+            <View style={styles.holidayStatus}>
+              <ActivityIndicator size="small" color="#007AFF" />
+              <Text style={styles.holidayStatusText}>{holidayLoadStep}</Text>
+            </View>
+          )}
+          {holidayLoadComplete && !isLoadingHolidays && (
+            <View style={styles.holidayStatus}>
+              <Ionicons name="checkmark-circle" size={16} color="#34C759" />
+              <Text style={[styles.holidayStatusText, { color: '#34C759' }]}>
+                공휴일 데이터 준비 완료
+              </Text>
+            </View>
+          )}
+        </View>
       </ScrollView>
 
       {/* 커스텀 시작 시간 Picker */}
@@ -296,6 +442,9 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete }) => {
         onCancel={() => setShowEndTimePicker(false)}
         onConfirm={handleEndTimeConfirm}
       />
+
+      {/* 로딩 오버레이 */}
+      {isLoading && <LoadingIndicator />}
     </SafeAreaView>
   );
 };
@@ -404,6 +553,85 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: '600',
+  },
+  holidayNoticeContainer: {
+    marginTop: 15,
+    backgroundColor: '#f0f8ff',
+    padding: 12,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#007AFF',
+  },
+  holidayNotice: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  holidayStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    gap: 6,
+  },
+  holidayStatusText: {
+    fontSize: 12,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  // 로딩 오버레이 스타일
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  loadingContainer: {
+    backgroundColor: '#fff',
+    padding: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    maxWidth: 280,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  loadingTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    marginTop: 15,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 5,
+    textAlign: 'center',
+  },
+  loadingSubText: {
+    fontSize: 14,
+    color: '#007AFF',
+    marginBottom: 5,
+    textAlign: 'center',
+  },
+  loadingDescription: {
+    fontSize: 12,
+    color: '#999',
+    textAlign: 'center',
+    marginTop: 8,
   },
 });
 

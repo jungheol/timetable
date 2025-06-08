@@ -37,10 +37,9 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
 
   useEffect(() => {
     loadSchedule();
-    initializeHolidays();
   }, []);
 
-  // 화면에 포커스될 때마다 이벤트 새로고침
+  // 화면에 포커스될 때마다 이벤트와 공휴일 새로고침
   useFocusEffect(
     useCallback(() => {
       if (schedule) {
@@ -59,67 +58,72 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
-  const initializeHolidays = async () => {
-    try {
-      console.log('🎌 Initializing holidays...');
-      setIsLoadingHolidays(true);
-      
-      // DB 확인 후 필요시에만 API 호출하는 초기화 메서드 사용
-      await HolidayService.initializeCurrentYears();
-      
-      console.log('✅ Holiday initialization complete');
-    } catch (error) {
-      console.error('❌ Error initializing holidays:', error);
-      // 초기화 실패해도 앱은 계속 동작
-    } finally {
-      setIsLoadingHolidays(false);
-    }
-  };
-
   const loadHolidaysForCurrentPeriod = async () => {
     try {
       const weekDays = getWeekDays();
       const startDate = weekDays[0].format('YYYY-MM-DD');
       const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
       
-      console.log(`🎌 Loading holidays for period: ${startDate} ~ ${endDate}`);
+      console.log(`🇰🇷 Loading holidays for period: ${startDate} ~ ${endDate}`);
       
       // DB에서 현재 표시 기간의 공휴일 조회
       const periodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
       
-      // 만약 해당 기간에 공휴일이 없다면, 연도별로 확인해서 없으면 API 호출
+      // 날짜를 키로 하는 객체로 변환
+      const holidayMap: { [key: string]: Holiday } = {};
+      periodHolidays.forEach(holiday => {
+        holidayMap[holiday.date] = holiday;
+      });
+      
+      setHolidays(holidayMap);
+      console.log(`🇰🇷 Loaded ${periodHolidays.length} holidays for period`);
+      
+      // 공휴일이 없는 경우, 해당 연도 데이터가 있는지 확인하고 없으면 조용히 백그라운드에서 로드
       if (periodHolidays.length === 0) {
         const years = Array.from(new Set(weekDays.map(day => day.year())));
-        console.log(`🔍 No holidays found for period, checking years: ${years.join(', ')}`);
-        
-        for (const year of years) {
-          const yearHolidays = await HolidayService.getHolidaysForYear(year);
-          console.log(`📅 Loaded ${yearHolidays.length} holidays for year ${year}`);
-        }
-        
-        // 다시 조회
-        const updatedPeriodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
-        
-        // 날짜를 키로 하는 객체로 변환
-        const holidayMap: { [key: string]: Holiday } = {};
-        updatedPeriodHolidays.forEach(holiday => {
-          holidayMap[holiday.date] = holiday;
-        });
-        
-        setHolidays(holidayMap);
-        console.log(`🎌 Final loaded ${updatedPeriodHolidays.length} holidays for period after API check`);
-      } else {
-        // 날짜를 키로 하는 객체로 변환
-        const holidayMap: { [key: string]: Holiday } = {};
-        periodHolidays.forEach(holiday => {
-          holidayMap[holiday.date] = holiday;
-        });
-        
-        setHolidays(holidayMap);
-        console.log(`🎌 Loaded ${periodHolidays.length} holidays for period from DB`);
+        loadMissingHolidaysQuietly(years);
       }
     } catch (error) {
       console.error('❌ Error loading holidays for period:', error);
+    }
+  };
+
+  // 조용히 백그라운드에서 누락된 공휴일 데이터 로드
+  const loadMissingHolidaysQuietly = async (years: number[]) => {
+    try {
+      // 비동기로 실행하여 UI 블로킹 방지
+      setTimeout(async () => {
+        for (const year of years) {
+          const existingHolidays = await DatabaseService.getHolidaysByYear(year);
+          if (existingHolidays.length === 0) {
+            console.log(`🇰🇷 Quietly loading missing holidays for year ${year}...`);
+            try {
+              await HolidayService.getHolidaysForYear(year);
+              
+              // 로드 완료 후 현재 기간에 해당하는 공휴일이 있으면 UI 업데이트
+              const weekDays = getWeekDays();
+              const startDate = weekDays[0].format('YYYY-MM-DD');
+              const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
+              
+              const updatedPeriodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
+              
+              if (updatedPeriodHolidays.length > 0) {
+                const holidayMap: { [key: string]: Holiday } = {};
+                updatedPeriodHolidays.forEach(holiday => {
+                  holidayMap[holiday.date] = holiday;
+                });
+                
+                setHolidays(holidayMap);
+                console.log(`🇰🇷 Quietly updated holidays: ${updatedPeriodHolidays.length}`);
+              }
+            } catch (error) {
+              console.warn(`🇰🇷 Failed to quietly load holidays for ${year}:`, error);
+            }
+          }
+        }
+      }, 100); // 100ms 후에 백그라운드에서 실행
+    } catch (error) {
+      console.error('❌ Error in quiet holiday loading:', error);
     }
   };
 
@@ -187,19 +191,16 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       console.error('🧪 Holiday debug error:', error);
       Alert.alert('디버그 오류', '공휴일 디버깅 중 오류가 발생했습니다.');
     }
-  }, [schedule, holidays]); // getWeekDays 의존성 제거
+  }, [schedule, holidays]);
 
-  // 공휴일 강제 업데이트
+  // 공휴일 강제 업데이트 (필요시에만 사용)
   const handleRefreshHolidays = async () => {
     if (isLoadingHolidays) return; // 중복 요청 방지
     
     try {
-      const currentYear = new Date().getFullYear();
-      const nextYear = currentYear + 1;
-      
-              Alert.alert(
+      Alert.alert(
         '공휴일 업데이트',
-        `공휴일 데이터를 API에서 다시 가져오시겠습니까?\n\n현재 상태:\n• DB에서 공휴일 우선 로드\n• 없으면 API에서 자동 수집\n• API 키 문제시 데이터 없음`,
+        `공휴일 데이터를 API에서 다시 가져오시겠습니까?\n\n참고: 초기 설정에서 이미 공휴일 데이터가 로드되었으며, 일반적으로 수동 업데이트는 필요하지 않습니다.`,
         [
           { text: '취소', style: 'cancel' },
           {

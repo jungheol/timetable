@@ -36,7 +36,7 @@ class HolidayService {
   // 특정 연도의 공휴일 데이터 가져오기 (DB 우선, API는 보조)
   async getHolidaysForYear(year: number): Promise<Holiday[]> {
     try {
-      console.log(`🎌 === Getting holidays for year ${year} ===`);
+      console.log(`🇰🇷 === Getting holidays for year ${year} ===`);
       
       // 1. 먼저 DB에서 데이터 확인
       const dbHolidays = await DatabaseService.getHolidaysByYear(year);
@@ -87,12 +87,9 @@ class HolidayService {
         } else {
           console.log(`ℹ️ No holidays found for ${year}-${month.toString().padStart(2, '0')}`);
         }
-        
-        // API 호출 간격 조절
-        await this.delay(300);
       }
       
-      console.log(`\n🎌 === Final Result for ${year} ===`);
+      console.log(`\n🇰🇷 === Final Result for ${year} ===`);
       console.log(`📊 Total holidays collected: ${holidays.length}`);
       
       if (holidays.length > 0) {
@@ -400,7 +397,7 @@ class HolidayService {
         console.log(`   ✅ Created holiday: ${holiday.date} - ${holiday.name} (Holiday: ${holiday.is_holiday})`);
       }
       
-      console.log(`🎌 Transform result: ${holidays.length} holidays created`);
+      console.log(`🇰🇷 Transform result: ${holidays.length} holidays created`);
       return holidays;
     } catch (error) {
       console.error('❌ Transform Error:', error);
@@ -451,7 +448,7 @@ class HolidayService {
     const currentYear = new Date().getFullYear();
     
     try {
-      console.log(`🎌 === Initializing holidays for ${currentYear} ===`);
+      console.log(`🇰🇷 === Initializing holidays for ${currentYear} ===`);
       await this.updateHolidaysIfNeeded(currentYear, false);
       console.log('✅ Holiday initialization completed');
     } catch (error) {
