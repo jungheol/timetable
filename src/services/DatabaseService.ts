@@ -82,6 +82,29 @@ export interface Holiday {
   del_yn?: boolean;
 }
 
+// 통계 관련 인터페이스
+export interface AcademyExpenseStats {
+  academy_id: number;
+  academy_name: string;
+  subject: string;
+  total_expense: number;
+  monthly_fee: number;
+  payment_cycle: number;
+  months_count: number;
+}
+
+export interface MonthlyExpenseStats {
+  subject: string;
+  total_expense: number;
+  academy_count: number;
+}
+
+export interface MonthlyStudyStats {
+  subject: string;
+  total_hours: number;
+  academy_name?: string;
+}
+
 class DatabaseService {
   private db: SQLite.SQLiteDatabase | null = null;
 
@@ -1306,6 +1329,325 @@ async deleteSchedule(id: number): Promise<void> {
       
     } catch (error) {
       console.error('🧪 Error in range holiday debug:', error);
+    }
+  }
+
+  // 학원별 총 지출 금액 통계
+  async getAcademyExpenseStats(): Promise<AcademyExpenseStats[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getAllAsync<AcademyExpenseStats>(
+        `SELECT 
+          a.id as academy_id,
+          a.name as academy_name,
+          a.subject,
+          a.monthly_fee,
+          a.payment_cycle,
+          CASE 
+            WHEN a.end_month IS NULL THEN 
+              CAST((julianday('now') - julianday(a.start_month || '-01')) / 30.44 AS INTEGER) + 1
+            ELSE 
+              CAST((julianday(a.end_month || '-01') - julianday(a.start_month || '-01')) / 30.44 AS INTEGER) + 1
+          END as months_count,
+          CASE 
+            WHEN a.monthly_fee IS NOT NULL AND a.payment_cycle IS NOT NULL THEN
+              CASE 
+                WHEN a.end_month IS NULL THEN 
+                  (CAST((julianday('now') - julianday(a.start_month || '-01')) / 30.44 AS INTEGER) + 1) * (a.monthly_fee / a.payment_cycle)
+                ELSE 
+                  (CAST((julianday(a.end_month || '-01') - julianday(a.start_month || '-01')) / 30.44 AS INTEGER) + 1) * (a.monthly_fee / a.payment_cycle)
+              END
+            ELSE 0
+          END as total_expense
+        FROM academies a
+        WHERE a.del_yn = 0 AND a.start_month IS NOT NULL
+        ORDER BY total_expense DESC, a.subject, a.name`
+      );
+      return result;
+    } catch (error) {
+      console.error('Error getting academy expense stats:', error);
+      throw error;
+    }
+  }
+
+  // 월별 지출 통계
+  async getMonthlyExpenseStats(year: number, month: number): Promise<MonthlyExpenseStats[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 미래 달인 경우 빈 배열 반환
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1;
+      
+      if (year > currentYear || (year === currentYear && month > currentMonth)) {
+        console.log(`📊 Future month requested: ${year}-${month}, returning empty data`);
+        return [];
+      }
+      
+      console.log(`📊 Calculating expenses for ${year}-${month}`);
+      
+      // 해당 월의 모든 학원 조회
+      const academies = await db.getAllAsync<any>(
+        `SELECT 
+          id, name, subject, monthly_fee, payment_cycle, payment_method,
+          payment_day, start_month, end_month, status
+        FROM academies 
+        WHERE del_yn = 0 
+          AND monthly_fee IS NOT NULL 
+          AND payment_cycle IS NOT NULL
+          AND payment_day IS NOT NULL`
+      );
+      
+      console.log(`📊 Found ${academies.length} academies with payment info`);
+      
+      const subjectExpenses = new Map<string, { total_expense: number; academy_count: number }>();
+      
+      for (const academy of academies) {
+        const shouldInclude = this.shouldIncludeAcademyInMonth(academy, year, month);
+        
+        if (shouldInclude) {
+          const monthlyAmount = academy.monthly_fee / academy.payment_cycle;
+          const subject = academy.subject || '기타';
+          
+          console.log(`📊 Including ${academy.name} (${subject}): ${monthlyAmount}원`);
+          
+          const current = subjectExpenses.get(subject) || { total_expense: 0, academy_count: 0 };
+          current.total_expense += monthlyAmount;
+          current.academy_count += 1;
+          subjectExpenses.set(subject, current);
+        } else {
+          console.log(`📊 Excluding ${academy.name}: payment logic`);
+        }
+      }
+      
+      // 결과 변환
+      const result: MonthlyExpenseStats[] = Array.from(subjectExpenses.entries())
+        .map(([subject, data]) => ({
+          subject,
+          total_expense: Math.round(data.total_expense),
+          academy_count: data.academy_count
+        }))
+        .sort((a, b) => b.total_expense - a.total_expense);
+      
+      console.log(`📊 Final monthly expense stats:`, result);
+      return result;
+    } catch (error) {
+      console.error('Error getting monthly expense stats:', error);
+      throw error;
+    }
+  }
+
+  // 특정 월에 학원비가 포함되어야 하는지 판단하는 헬퍼 메서드
+  private shouldIncludeAcademyInMonth(academy: any, targetYear: number, targetMonth: number): boolean {
+    try {
+      const { start_month, end_month, payment_day, payment_cycle } = academy;
+      
+      // 1. 시작월 확인
+      if (!start_month) return false;
+      
+      const [startYear, startMonth] = start_month.split('-').map(Number);
+      const startDate = new Date(startYear, startMonth - 1, 1);
+      const targetDate = new Date(targetYear, targetMonth - 1, 1);
+      
+      // 시작월보다 이전이면 제외
+      if (targetDate < startDate) {
+        return false;
+      }
+      
+      // 2. 종료월과 결제일 확인
+      if (end_month) {
+        const [endYear, endMonth] = end_month.split('-').map(Number);
+        const endDate = new Date(endYear, endMonth - 1, 1);
+        
+        // 종료월보다 이후면 제외
+        if (targetDate > endDate) {
+          return false;
+        }
+        
+        // 종료월과 같은 달인 경우, 결제일 확인
+        if (targetYear === endYear && targetMonth === endMonth) {
+          // 결제일 이전에 중단했다면 해당 월 비용 제외
+          // 예: 6월 15일 결제, 6월 10일 중단 → 6월 비용 제외
+          // 예: 6월 15일 결제, 6월 20일 중단 → 6월 비용 포함
+          
+          // 결제 주기별 결제일 계산
+          const paymentDates = this.getPaymentDatesForMonth(targetYear, targetMonth, payment_day, payment_cycle, startYear, startMonth);
+          
+          // 해당 월에 결제일이 있는지 확인
+          const hasPaymentInMonth = paymentDates.length > 0;
+          
+          if (!hasPaymentInMonth) {
+            return false; // 해당 월에 결제일이 없으면 제외
+          }
+          
+          // 첫 번째 결제일 이전에 중단했는지 확인
+          const firstPaymentDate = Math.min(...paymentDates);
+          const endDay = new Date().getDate(); // 실제로는 정확한 중단일을 알아야 하지만, 현재는 월말로 가정
+          
+          console.log(`📊 Payment check for ${academy.name}: payment_day=${payment_day}, end_month=${end_month}`);
+          
+          // 중단월의 경우 해당 월에 결제가 이루어졌는지 확인하여 포함 여부 결정
+          // 현재는 간단하게 중단월도 포함하는 것으로 처리 (실제 앱에서는 정확한 중단일이 필요)
+          return true;
+        }
+      }
+      
+      // 3. 결제 주기에 따른 해당 월 결제 여부 확인
+      const paymentDates = this.getPaymentDatesForMonth(targetYear, targetMonth, payment_day, payment_cycle, startYear, startMonth);
+      return paymentDates.length > 0;
+      
+    } catch (error) {
+      console.error('Error checking academy inclusion:', error);
+      return false;
+    }
+  }
+
+  // 특정 월에 결제일이 있는지 확인하는 헬퍼 메서드
+  private getPaymentDatesForMonth(
+    targetYear: number, 
+    targetMonth: number, 
+    paymentDay: number, 
+    paymentCycle: number,
+    startYear: number,
+    startMonth: number
+  ): number[] {
+    try {
+      const paymentDates: number[] = [];
+      
+      // 시작월부터 현재까지 결제 주기 계산
+      const startDate = new Date(startYear, startMonth - 1, 1);
+      const targetDate = new Date(targetYear, targetMonth - 1, 1);
+      
+      // 시작월부터 대상월까지의 개월 수
+      const monthsDiff = (targetYear - startYear) * 12 + (targetMonth - startMonth);
+      
+      // 결제 주기별로 해당 월에 결제일이 있는지 확인
+      if (monthsDiff >= 0 && monthsDiff % paymentCycle === 0) {
+        // 해당 월의 마지막 날 확인
+        const lastDayOfMonth = new Date(targetYear, targetMonth, 0).getDate();
+        const actualPaymentDay = Math.min(paymentDay, lastDayOfMonth);
+        
+        paymentDates.push(actualPaymentDay);
+      }
+      
+      return paymentDates;
+      
+    } catch (error) {
+      console.error('Error getting payment dates:', error);
+      return [];
+    }
+  }
+
+  // 월별 학습 시간 통계
+  async getMonthlyStudyStats(year: number, month: number): Promise<MonthlyStudyStats[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 미래 달인 경우 빈 배열 반환
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1;
+      
+      if (year > currentYear || (year === currentYear && month > currentMonth)) {
+        console.log(`📊 Future month requested: ${year}-${month}, returning empty study data`);
+        return [];
+      }
+      
+      const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
+      const endDate = new Date(year, month, 0).toISOString().split('T')[0]; // 해당 월의 마지막 날
+      
+      console.log(`Getting study stats for ${startDate} to ${endDate}`);
+      
+      // 1. 일반 이벤트의 학습 시간
+      const regularEvents = await db.getAllAsync<any>(
+        `SELECT 
+          COALESCE(a.subject, '기타') as subject,
+          a.name as academy_name,
+          e.start_time,
+          e.end_time,
+          e.event_date,
+          e.category
+        FROM events e
+        LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+        WHERE e.del_yn = 0 
+          AND e.is_recurring = 0
+          AND e.event_date BETWEEN ? AND ?
+          AND e.category IN ('학원', '공부')`,
+        [startDate, endDate]
+      );
+      
+      // 2. 반복 이벤트의 학습 시간
+      const recurringEvents = await db.getAllAsync<any>(
+        `SELECT 
+          e.*, 
+          COALESCE(a.subject, '기타') as subject,
+          a.name as academy_name,
+          rp.monday, rp.tuesday, rp.wednesday, rp.thursday, 
+          rp.friday, rp.saturday, rp.sunday, 
+          rp.start_date, rp.end_date
+        FROM events e
+        LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+        INNER JOIN recurring_patterns rp ON e.recurring_group_id = rp.id
+        WHERE e.del_yn = 0 
+          AND e.is_recurring = 1
+          AND rp.del_yn = 0
+          AND rp.start_date <= ?
+          AND (rp.end_date IS NULL OR rp.end_date >= ?)
+          AND e.category IN ('학원', '공부')`,
+        [endDate, startDate]
+      );
+      
+      console.log(`Found ${regularEvents.length} regular events, ${recurringEvents.length} recurring patterns`);
+      
+      // 3. 시간 계산을 위한 헬퍼 함수
+      const calculateHours = (startTime: string, endTime: string): number => {
+        try {
+          const [startHour, startMin] = startTime.split(':').map(Number);
+          const [endHour, endMin] = endTime.split(':').map(Number);
+          
+          const startMinutes = startHour * 60 + startMin;
+          const endMinutes = endHour * 60 + endMin;
+          
+          const diffMinutes = endMinutes - startMinutes;
+          return diffMinutes > 0 ? diffMinutes / 60 : 0;
+        } catch (error) {
+          console.error('Error calculating hours:', error);
+          return 0;
+        }
+      };
+      
+      // 4. 과목별 시간 집계
+      const subjectHours = new Map<string, number>();
+      
+      // 일반 이벤트 처리
+      for (const event of regularEvents) {
+        const hours = calculateHours(event.start_time, event.end_time);
+        const subject = event.subject || '기타';
+        subjectHours.set(subject, (subjectHours.get(subject) || 0) + hours);
+      }
+      
+      // 반복 이벤트 처리
+      for (const recurringEvent of recurringEvents) {
+        const dates = this.generateRecurringDates(recurringEvent, startDate, endDate);
+        const hours = calculateHours(recurringEvent.start_time, recurringEvent.end_time);
+        const subject = recurringEvent.subject || '기타';
+        
+        const totalHours = hours * dates.length;
+        subjectHours.set(subject, (subjectHours.get(subject) || 0) + totalHours);
+      }
+      
+      // 5. 결과 변환
+      const result: MonthlyStudyStats[] = Array.from(subjectHours.entries()).map(([subject, total_hours]) => ({
+        subject,
+        total_hours: Math.round(total_hours * 100) / 100 // 소수점 2자리까지
+      })).sort((a, b) => b.total_hours - a.total_hours);
+      
+      console.log('Monthly study stats result:', result);
+      return result;
+    } catch (error) {
+      console.error('Error getting monthly study stats:', error);
+      throw error;
     }
   }
 }
