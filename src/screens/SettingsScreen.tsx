@@ -18,9 +18,8 @@ interface SettingsTabProps {
   // 필요한 props가 있다면 여기에 추가
 }
 
-const SettingsTab: React.FC<SettingsTabProps> = () => {
+const SettingsScreen: React.FC<SettingsTabProps> = () => {
   const [notificationEnabled, setNotificationEnabled] = useState(false);
-  const [expoPushToken, setExpoPushToken] = useState<string>('');
 
   useEffect(() => {
     // 알림 서비스 초기화 및 설정 로드
@@ -31,10 +30,7 @@ const SettingsTab: React.FC<SettingsTabProps> = () => {
   const initializeSettings = async () => {
     try {
       // 알림 서비스 초기화
-      const initialized = await NotificationService.initialize();
-      if (initialized) {
-        setExpoPushToken(NotificationService.getExpoPushToken());
-      }
+      await NotificationService.initialize();
 
       // 저장된 알림 설정 로드
       const enabled = await NotificationService.getPaymentNotificationEnabled();
@@ -459,4 +455,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default SettingsTab;
+export default SettingsScreen;
