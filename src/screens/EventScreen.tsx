@@ -15,6 +15,7 @@ import moment from 'moment';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import DatabaseService, { Event, Academy, Schedule } from '../services/DatabaseService';
+import { useAcademyNotifications } from '../hooks/useAcademyNotifications';
 import CustomPicker from '../components/CustomPicker';
 
 // App.tsx에서 정의된 타입 import
@@ -36,6 +37,13 @@ interface DayButton {
 
 const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   const { event, selectedDate, selectedTime, scheduleId, onSave } = route.params;
+
+  // 🔔 알림 훅 추가
+  const {
+    handleAcademyCreated,
+    handleAcademyUpdated,
+    handleAcademyDeleted,
+  } = useAcademyNotifications();
 
   // 기본 상태
   const [title, setTitle] = useState('');
@@ -336,6 +344,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
 
     const eventTitle = category === '학원' ? academyName : title;
     let academyId: number | undefined = selectedAcademy?.id;
+    let newlyCreatedAcademyId: number | undefined;
     
     // 학원 카테고리인 경우 학원 생성/조회
     if (category === '학원' && academyName.trim()) {
@@ -344,6 +353,12 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         selectedSubject,
         scheduleId // ✅ 스케줄 ID 전달
       );
+      
+      // 🔔 새로 생성된 학원인지 확인
+      if (!selectedAcademy || selectedAcademy.name !== academyName.trim()) {
+        newlyCreatedAcademyId = academyId;
+        console.log('🏫 New academy created during event update:', newlyCreatedAcademyId);
+      }
     }
 
     const updatedEvent: Event = {
@@ -358,6 +373,11 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
 
     await DatabaseService.updateEvent(updatedEvent);
     console.log('Event updated successfully');
+
+    // 🔔 새로 생성된 학원에 대해서는 알림 설정하지 않음 (결제일 없음)
+    if (newlyCreatedAcademyId) {
+      console.log('💡 New academy created, but no payment notification set (no payment day)');
+    }
   };
 
   const saveSingleEvent = async () => {
@@ -373,6 +393,9 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         selectedSubject,
         scheduleId // ✅ 스케줄 ID 전달
       );
+      
+      // 🔔 새로 생성된 학원은 결제일이 없으므로 알림 설정하지 않음
+      console.log('💡 Academy created from event, but no payment notification set (no payment day)');
     }
     
     const eventData = {
@@ -438,6 +461,9 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         scheduleId // ✅ 스케줄 ID 전달
       );
       console.log('Academy ID:', academyId);
+      
+      // 🔔 새로 생성된 학원은 결제일이 없으므로 알림 설정하지 않음
+      console.log('💡 Academy created from recurring event, but no payment notification set (no payment day)');
     }
     
     const eventData: Omit<Event, 'id' | 'created_at' | 'updated_at'> = {
@@ -476,6 +502,31 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           onPress: async () => {
             setIsLoading(true);
             try {
+              // 🔔 학원 일정 삭제 시 알림도 함께 처리
+              if (event.category === '학원' && event.academy_id) {
+                try {
+                  // 해당 학원의 다른 일정이 있는지 확인
+                  const relatedEvents = await DatabaseService.getEvents(
+                    scheduleId, 
+                    moment().subtract(1, 'year').format('YYYY-MM-DD'),
+                    moment().add(1, 'year').format('YYYY-MM-DD')
+                  );
+                  
+                  const academyEvents = relatedEvents.filter(e => 
+                    e.academy_id === event.academy_id && e.id !== event.id
+                  );
+                  
+                  // 해당 학원의 마지막 일정이라면 알림도 삭제
+                  if (academyEvents.length === 0) {
+                    await handleAcademyDeleted(event.academy_id);
+                    console.log('✅ Academy notifications deleted for:', event.academy_id);
+                  }
+                } catch (notificationError) {
+                  console.error('❌ Error handling academy notifications:', notificationError);
+                  // 알림 처리 실패해도 일정 삭제는 계속 진행
+                }
+              }
+
               if (event.is_recurring) {
                 await DatabaseService.deleteRecurringEvent(event.id!);
               } else {
@@ -528,6 +579,16 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        {/* 🔔 알림 관련 정보 표시 (학원 카테고리일 때만) */}
+        {category === '학원' && (
+          <View style={styles.notificationInfo}>
+            <Ionicons name="notifications-outline" size={16} color="#FF9500" />
+            <Text style={styles.notificationInfoText}>
+              학원 관리에서 결제일을 설정하면 결제 알림을 받을 수 있습니다.
+            </Text>
+          </View>
+        )}
+
         {/* 요일 선택 */}
         <View style={styles.section}>
           <View style={styles.dayButtons}>
@@ -804,6 +865,22 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 20,
+  },
+  // 🔔 알림 정보 스타일 추가
+  notificationInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF8E1',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+    gap: 8,
+  },
+  notificationInfoText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#F57C00',
+    lineHeight: 16,
   },
   section: {
     marginBottom: 25,

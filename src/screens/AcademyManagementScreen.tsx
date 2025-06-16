@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import DatabaseService, { Academy, Schedule } from '../services/DatabaseService';
+import { useAcademyNotifications } from '../hooks/useAcademyNotifications';
 import { RootStackParamList } from '../../App';
 
 interface AcademyItem extends Academy {
@@ -32,6 +33,17 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
   const [currentSchedule, setCurrentSchedule] = useState<Schedule | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  // 🔔 알림 훅 추가
+  const {
+    handleAcademyUpdated,
+    handleAcademyDeleted,
+    handleAcademyStatusChanged,
+    debugNotifications,
+    sendTestNotification,
+    toggleTestMode,
+    isTestMode,
+  } = useAcademyNotifications();
 
   // 화면 포커스될 때마다 데이터 새로고침
   useFocusEffect(
@@ -110,7 +122,18 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
                     ? new Date().toISOString().slice(0, 7) // YYYY-MM 형식
                     : academy.end_month
                 };
+                
                 await DatabaseService.updateAcademy(updatedAcademy);
+                
+                // 🔔 학원 상태 변경 알림 처리
+                try {
+                  await handleAcademyStatusChanged(academy.id, newStatus);
+                  console.log(`✅ Academy status changed and notifications updated: ${academy.name} → ${newStatus}`);
+                } catch (notificationError) {
+                  console.error('❌ Error updating notifications for status change:', notificationError);
+                  // 알림 처리 실패해도 상태 변경은 성공한 것으로 처리
+                }
+                
                 await loadCurrentScheduleAndAcademies(); // 목록 새로고침
               } catch (error) {
                 console.error('Error updating academy status:', error);
@@ -137,6 +160,16 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
           onPress: async () => {
             try {
               await DatabaseService.deleteAcademy(academy.id);
+              
+              // 🔔 학원 삭제 알림 처리
+              try {
+                await handleAcademyDeleted(academy.id);
+                console.log(`✅ Academy deleted and notifications removed: ${academy.name}`);
+              } catch (notificationError) {
+                console.error('❌ Error removing notifications for deleted academy:', notificationError);
+                // 알림 처리 실패해도 학원 삭제는 성공한 것으로 처리
+              }
+              
               await loadCurrentScheduleAndAcademies(); // 목록 새로고침
             } catch (error) {
               console.error('Error deleting academy:', error);
@@ -162,26 +195,39 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleManageAcademy = (academy: Academy) => {
-    Alert.alert(
-      academy.name,
-      '어떤 작업을 하시겠습니까?',
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '편집',
-          onPress: () => handleEditAcademy(academy)
-        },
-        {
-          text: academy.status === '진행' ? '중단' : '재개',
-          onPress: () => handleToggleStatus(academy)
-        },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: () => handleDeleteAcademy(academy)
+    const actionButtons = [
+      { text: '취소', style: 'cancel' as const },
+      {
+        text: '편집',
+        onPress: () => handleEditAcademy(academy)
+      },
+      {
+        text: academy.status === '진행' ? '중단' : '재개',
+        onPress: () => handleToggleStatus(academy)
+      },
+      {
+        text: '삭제',
+        style: 'destructive' as const,
+        onPress: () => handleDeleteAcademy(academy)
+      }
+    ];
+
+    // 🔔 개발 모드에서는 알림 디버그 버튼 추가
+    if (__DEV__) {
+      actionButtons.splice(-1, 0, {
+        text: '🔔 알림 확인',
+        onPress: async () => {
+          try {
+            await debugNotifications();
+            Alert.alert('디버그', '콘솔에서 알림 정보를 확인해주세요.');
+          } catch (error) {
+            console.error('Error in debug notifications:', error);
+          }
         }
-      ]
-    );
+      });
+    }
+
+    Alert.alert(academy.name, '어떤 작업을 하시겠습니까?', actionButtons);
   };
 
   const getSubjectColor = (subject: Academy['subject']) => {
@@ -207,12 +253,28 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
     return `${fee.toLocaleString()}원`;
   };
 
+  // 🔔 알림 상태 표시 함수
+  const getNotificationIcon = (academy: Academy) => {
+    if (academy.status !== '진행' || !academy.payment_day) {
+      return null;
+    }
+    return (
+      <View style={styles.notificationBadge}>
+        <Ionicons name="notifications" size={12} color="#FF9500" />
+      </View>
+    );
+  };
+
   const renderAcademyItem = ({ item }: { item: Academy }) => (
     <View style={styles.academyCard}>
       <View style={styles.academyHeader}>
         <View style={styles.academyTitleRow}>
-          <View style={[styles.subjectBadge, { backgroundColor: getSubjectColor(item.subject) }]}>
-            <Text style={styles.subjectText}>{item.subject}</Text>
+          <View style={styles.academyTitleLeft}>
+            <View style={[styles.subjectBadge, { backgroundColor: getSubjectColor(item.subject) }]}>
+              <Text style={styles.subjectText}>{item.subject}</Text>
+            </View>
+            {/* 🔔 알림 상태 표시 */}
+            {getNotificationIcon(item)}
           </View>
           <TouchableOpacity 
             style={styles.moreButton}
@@ -229,7 +291,16 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
             {item.monthly_fee ? `${formatMonthlyFee(item.monthly_fee)} / 1개월` : '수강료 미설정'}
           </Text>
           {item.payment_cycle && item.payment_cycle > 1 && (
-            <Text style={styles.cycleText}>결제주기 : {item.payment_cycle}개월마다 / 1일</Text>
+            <Text style={styles.cycleText}>결제주기 : {item.payment_cycle}개월마다</Text>
+          )}
+          {/* 🔔 결제일 정보 표시 */}
+          {item.payment_day && (
+            <Text style={styles.paymentDayText}>
+              매월 {item.payment_day}일 결제 
+              {item.status === '진행' && (
+                <Text style={styles.notificationActiveText}> (알림 설정됨)</Text>
+              )}
+            </Text>
           )}
         </View>
       </View>
@@ -269,6 +340,81 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
           }
         </Text>
       </View>
+
+      {/* 🔔 알림 정보 박스 추가 */}
+      <View style={styles.notificationInfoBox}>
+        <Ionicons name="notifications-outline" size={16} color="#FF9500" />
+        <Text style={styles.notificationInfoText}>
+          학원의 결제일을 설정하면 자동으로 결제 알림을 받을 수 있습니다.
+        </Text>
+      </View>
+
+      {/* 🔔 개발 모드에서만 표시되는 디버그 도구 */}
+      {__DEV__ && (
+        <View style={styles.debugToolsContainer}>
+          <Text style={styles.debugToolsTitle}>🔧 개발자 도구</Text>
+          
+          {/* 🧪 테스트 모드 토글 */}
+          <View style={styles.testModeContainer}>
+            <Text style={styles.testModeLabel}>
+              테스트 모드 ({isTestMode() ? '30분 간격' : '정상 모드'})
+            </Text>
+            <TouchableOpacity
+              style={[styles.testModeButton, isTestMode() && styles.testModeButtonActive]}
+              onPress={async () => {
+                try {
+                  const newMode = await toggleTestMode();
+                  Alert.alert(
+                    '테스트 모드',
+                    newMode 
+                      ? '30분 간격 테스트 알림이 활성화되었습니다.' 
+                      : '정상 모드로 변경되었습니다.',
+                    [{ text: '확인' }]
+                  );
+                } catch (error) {
+                  console.error('Test mode toggle error:', error);
+                }
+              }}
+            >
+              <Text style={[styles.testModeButtonText, isTestMode() && styles.testModeButtonTextActive]}>
+                {isTestMode() ? '🧪 ON' : '⏰ OFF'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          
+          <View style={styles.debugButtonsRow}>
+            <TouchableOpacity
+              style={styles.debugButton}
+              onPress={async () => {
+                try {
+                  await debugNotifications();
+                  Alert.alert('디버그', '콘솔에서 알림 정보를 확인해주세요.');
+                } catch (error) {
+                  console.error('Debug error:', error);
+                }
+              }}
+            >
+              <Text style={styles.debugButtonText}>🔍 알림 디버그</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={styles.debugButton}
+              onPress={async () => {
+                try {
+                  const success = await sendTestNotification();
+                  if (success) {
+                    Alert.alert('테스트', '2초 후 테스트 알림이 전송됩니다.');
+                  }
+                } catch (error) {
+                  console.error('Test notification error:', error);
+                }
+              }}
+            >
+              <Text style={styles.debugButtonText}>📱 테스트 알림</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
       
       {academies.length > 0 && (
         <View style={styles.statsContainer}>
@@ -278,6 +424,21 @@ const AcademyManagementScreen: React.FC<Props> = ({ navigation }) => {
               <Text style={styles.scheduleNameInStats}> - {currentSchedule.name}</Text>
             )}
           </Text>
+          {/* 🔔 알림 설정된 학원 수 표시 */}
+          {(() => {
+            const notificationEnabledCount = academies.filter(academy => 
+              academy.status === '진행' && academy.payment_day
+            ).length;
+            
+            if (notificationEnabledCount > 0) {
+              return (
+                <Text style={styles.notificationStatsText}>
+                  🔔 알림 설정: {notificationEnabledCount}개 학원
+                </Text>
+              );
+            }
+            return null;
+          })()}
         </View>
       )}
     </View>
@@ -365,7 +526,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#E3F2FD',
     padding: 12,
     borderRadius: 8,
-    marginBottom: 15,
+    marginBottom: 10,
     gap: 8,
   },
   infoText: {
@@ -373,6 +534,85 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#1976D2',
     lineHeight: 16,
+  },
+  // 🔔 알림 정보 박스 스타일
+  notificationInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FFF8E1',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
+    gap: 8,
+  },
+  notificationInfoText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#F57C00',
+    lineHeight: 16,
+  },
+  // 🔔 개발자 도구 스타일
+  debugToolsContainer: {
+    backgroundColor: '#F3E5F5',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  debugToolsTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#7B1FA2',
+    marginBottom: 8,
+  },
+  // 🧪 테스트 모드 컨테이너
+  testModeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+    paddingVertical: 4,
+  },
+  testModeLabel: {
+    fontSize: 11,
+    color: '#7B1FA2',
+    fontWeight: '500',
+  },
+  testModeButton: {
+    backgroundColor: '#E1BEE7',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#D1C4E9',
+  },
+  testModeButtonActive: {
+    backgroundColor: '#FF6B35',
+    borderColor: '#FF6B35',
+  },
+  testModeButtonText: {
+    color: '#7B1FA2',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  testModeButtonTextActive: {
+    color: '#FFFFFF',
+  },
+  debugButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  debugButton: {
+    backgroundColor: '#9C27B0',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    flex: 1,
+  },
+  debugButtonText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    textAlign: 'center',
+    fontWeight: '500',
   },
   statsContainer: {
     marginBottom: 10,
@@ -386,6 +626,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '400',
     color: '#666',
+  },
+  // 🔔 알림 통계 스타일
+  notificationStatsText: {
+    fontSize: 12,
+    color: '#FF9500',
+    marginTop: 4,
+    fontWeight: '500',
   },
   academyCard: {
     backgroundColor: '#fff',
@@ -408,6 +655,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
+  // 🔔 학원 제목 왼쪽 영역 (배지 + 알림 아이콘)
+  academyTitleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   subjectBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -417,6 +670,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#fff',
+  },
+  // 🔔 알림 배지 스타일
+  notificationBadge: {
+    backgroundColor: '#FFF8E1',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FFE0B2',
   },
   moreButton: {
     padding: 4,
@@ -437,6 +699,16 @@ const styles = StyleSheet.create({
   cycleText: {
     fontSize: 12,
     color: '#999',
+  },
+  // 🔔 결제일 정보 스타일
+  paymentDayText: {
+    fontSize: 12,
+    color: '#FF9500',
+    fontWeight: '500',
+  },
+  notificationActiveText: {
+    color: '#34C759',
+    fontSize: 11,
   },
   academyFooter: {
     flexDirection: 'row',
