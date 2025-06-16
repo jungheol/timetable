@@ -33,21 +33,41 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
       await NotificationService.initialize();
 
       // 저장된 알림 설정 로드
-      const enabled = await NotificationService.getPaymentNotificationEnabled();
-      setNotificationEnabled(enabled);
+      const savedEnabled = await NotificationService.getPaymentNotificationEnabled();
+      
+      // 💡 핵심 수정: 권한 상태도 함께 확인
+      const permissions = await NotificationService.checkPermissions();
+      
+      console.log('🔍 [Settings] Saved notification setting:', savedEnabled);
+      console.log('🔍 [Settings] System permissions:', permissions);
+      
+      // 시스템 권한이 있고, 저장된 설정이 없다면 자동으로 활성화
+      if (permissions.granted && savedEnabled === null) {
+        console.log('✅ [Settings] Auto-enabling notifications (permissions granted, no saved setting)');
+        await NotificationService.setPaymentNotificationEnabled(true);
+        setNotificationEnabled(true);
+      } else {
+        // 저장된 설정값 사용 (권한이 없으면 false로 표시)
+        const finalEnabled = permissions.granted ? savedEnabled : false;
+        setNotificationEnabled(finalEnabled);
+        console.log('🔧 [Settings] Final notification state:', finalEnabled);
+      }
+      
     } catch (error) {
-      console.error('설정 초기화 오류:', error);
+      console.error('❌ [Settings] 설정 초기화 오류:', error);
     }
   };
 
   // 결제일 알림 토글
   const toggleNotification = async (value: boolean) => {
     try {
+      console.log('🔄 [Settings] Toggling notification to:', value);
       setNotificationEnabled(value);
       
       if (value) {
         // 권한 확인
         const permissions = await NotificationService.checkPermissions();
+        console.log('🔍 [Settings] Current permissions:', permissions);
         
         if (!permissions.granted) {
           if (permissions.canAskAgain) {
@@ -89,7 +109,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
         await disableNotifications();
       }
     } catch (error) {
-      console.error('알림 설정 오류:', error);
+      console.error('❌ [Settings] 알림 설정 오류:', error);
       setNotificationEnabled(false);
       Alert.alert('오류', '알림 설정 중 오류가 발생했습니다.');
     }
@@ -98,6 +118,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
   // 알림 활성화
   const enableNotifications = async () => {
     try {
+      console.log('✅ [Settings] Enabling notifications');
       await NotificationService.setPaymentNotificationEnabled(true);
       Alert.alert(
         '알림 설정 완료',
@@ -125,6 +146,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
   // 알림 비활성화
   const disableNotifications = async () => {
     try {
+      console.log('🔇 [Settings] Disabling notifications');
       await NotificationService.setPaymentNotificationEnabled(false);
       Alert.alert('알림 설정', '결제일 알림이 비활성화되었습니다.');
     } catch (error) {
@@ -333,6 +355,25 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
                   }}
                 >
                   <Text style={styles.debugButtonText}>📱 테스트 알림</Text>
+                </TouchableOpacity>
+                
+                {/* 추가 디버그 버튼 */}
+                <TouchableOpacity
+                  style={styles.debugButton}
+                  onPress={async () => {
+                    try {
+                      const permissions = await NotificationService.checkPermissions();
+                      const enabled = await NotificationService.getPaymentNotificationEnabled();
+                      Alert.alert(
+                        '현재 상태',
+                        `권한: ${permissions.granted ? '허용됨' : '거부됨'}\n설정: ${enabled ? '활성화' : '비활성화'}`
+                      );
+                    } catch (error) {
+                      console.error('상태 확인 오류:', error);
+                    }
+                  }}
+                >
+                  <Text style={styles.debugButtonText}>📊 상태 확인</Text>
                 </TouchableOpacity>
               </View>
             )}
