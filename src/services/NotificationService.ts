@@ -169,8 +169,6 @@ class NotificationService {
     const now = new Date();
     let scheduledCount = 0;
 
-    console.log(`🧪 TEST MODE: Scheduling 30-minute interval notifications for ${academy.name}`);
-
     // 다음 분부터 시작해서 3시간 동안 30분마다 알림 (총 6개)
     for (let i = 1; i <= 6; i++) {
       const notificationTime = new Date(now.getTime() + (1 * 60 * 1000 * i)); // 5분 * i
@@ -195,10 +193,8 @@ class NotificationService {
       });
 
       scheduledCount++;
-      console.log(`🧪 Test notification ${i} scheduled for: ${notificationTime.toLocaleTimeString()}`);
     }
 
-    console.log(`✅ ${academy.name}: ${scheduledCount} test notifications scheduled (30min intervals)`);
     return scheduledCount;
   }
 
