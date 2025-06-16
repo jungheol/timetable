@@ -1,0 +1,32 @@
+{
+  "cli": {
+    "version": ">= 16.9.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "ios": {
+        "cache": {
+          "disabled": true
+        }
+      }
+    },
+    "production": {
+      "ios": {
+        "cache": {
+          "disabled": true
+        },
+        "cocoapods": "1.15.2"
+      },
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}
