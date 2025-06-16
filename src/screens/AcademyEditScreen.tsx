@@ -15,6 +15,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import moment from 'moment';
 import DatabaseService, { Academy } from '../services/DatabaseService';
+import { useAcademyNotifications } from '../hooks/useAcademyNotifications';
 import CustomPicker from '../components/CustomPicker';
 import { RootStackParamList } from '../../App';
 
@@ -29,6 +30,13 @@ interface Props {
 const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
   const { academy, scheduleId, onSave } = route.params || {};
   const isEditMode = !!academy;
+
+  // 🔔 알림 훅 추가
+  const {
+    handleAcademyCreated,
+    handleAcademyUpdated,
+    sendTestNotification,
+  } = useAcademyNotifications();
 
   // 기본 정보
   const [name, setName] = useState('');
@@ -215,6 +223,9 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
 
       console.log('📚 Academy data to save:', academyData);
 
+      let academyId: number;
+      let isNewAcademy = false;
+
       if (isEditMode && academy) {
         // 편집 모드 - academy_id와 schedule_id 모두 포함
         const updatedAcademy: Academy = {
@@ -227,11 +238,37 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
         console.log('📚 Updating academy:', updatedAcademy);
         await DatabaseService.updateAcademy(updatedAcademy);
         console.log('✅ Academy updated successfully');
+        
+        academyId = academy.id;
+
+        // 🔔 학원 정보 업데이트 알림 처리
+        try {
+          await handleAcademyUpdated(academyId);
+          console.log('✅ Academy update notifications processed');
+        } catch (notificationError) {
+          console.error('❌ Error processing academy update notifications:', notificationError);
+          // 알림 처리 실패해도 저장은 성공한 것으로 처리
+        }
       } else {
         // 생성 모드
         console.log('📚 Creating new academy');
-        const academyId = await DatabaseService.createAcademy(academyData);
+        academyId = await DatabaseService.createAcademy(academyData);
         console.log('✅ Academy created with ID:', academyId);
+        
+        isNewAcademy = true;
+
+        // 🔔 새 학원 생성 알림 처리 (결제일이 있는 경우만)
+        if (academyData.payment_day && academyData.status === '진행') {
+          try {
+            await handleAcademyCreated(academyId);
+            console.log('✅ New academy notifications processed');
+          } catch (notificationError) {
+            console.error('❌ Error processing new academy notifications:', notificationError);
+            // 알림 처리 실패해도 저장은 성공한 것으로 처리
+          }
+        } else {
+          console.log('💡 New academy created but no notification set (no payment day or not active)');
+        }
       }
 
       // 성공 처리
@@ -241,9 +278,30 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
       
       navigation.goBack();
       
+      // 🔔 알림 관련 성공 메시지
+      const baseMessage = isEditMode ? '학원 정보가 수정되었습니다.' : '새 학원이 추가되었습니다.';
+      const hasPaymentDay = academyData.payment_day && academyData.status === '진행';
+      const notificationMessage = hasPaymentDay 
+        ? '\n\n💡 결제일이 설정되어 알림을 받으실 수 있습니다.'
+        : '';
+      
       Alert.alert(
         '완료', 
-        isEditMode ? '학원 정보가 수정되었습니다.' : '새 학원이 추가되었습니다.'
+        baseMessage + notificationMessage,
+        [
+          { text: '확인' },
+          ...(hasPaymentDay && __DEV__ ? [{
+            text: '테스트 알림',
+            onPress: async () => {
+              try {
+                await sendTestNotification();
+                Alert.alert('테스트', '2초 후 테스트 알림이 전송됩니다.');
+              } catch (error) {
+                console.error('Test notification error:', error);
+              }
+            }
+          }] : [])
+        ]
       );
     } catch (error) {
       console.error('❌ Error saving academy:', error);
@@ -255,6 +313,11 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const handleCancel = () => {
     navigation.goBack();
+  };
+
+  // 🔔 결제일 변경 시 알림 정보 표시
+  const shouldShowNotificationInfo = () => {
+    return monthlyFee && Number(paymentDay) >= 1 && Number(paymentDay) <= 31;
   };
 
   return (
@@ -288,6 +351,16 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
             현재 활성 스케줄에 학원이 추가됩니다.
           </Text>
         </View>
+
+        {/* 🔔 알림 정보 표시 */}
+        {shouldShowNotificationInfo() && (
+          <View style={styles.notificationInfo}>
+            <Ionicons name="notifications-outline" size={16} color="#FF9500" />
+            <Text style={styles.notificationInfoText}>
+              매월 {paymentDay}일 결제일 1일 전 오전 8시에 알림을 받습니다.
+            </Text>
+          </View>
+        )}
 
         {/* 기본 정보 */}
         <View style={styles.section}>
@@ -404,7 +477,13 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
 
           <View style={styles.formGroup}>
-            <Text style={styles.label}>결제일</Text>
+            <View style={styles.labelWithIcon}>
+              <Text style={styles.label}>결제일</Text>
+              {/* 🔔 알림 아이콘 표시 */}
+              {shouldShowNotificationInfo() && (
+                <Ionicons name="notifications" size={16} color="#FF9500" />
+              )}
+            </View>
             <TouchableOpacity
               style={styles.pickerButton}
               onPress={() => setShowPaymentDayPicker(true)}
@@ -515,6 +594,28 @@ const AcademyEditScreen: React.FC<Props> = ({ navigation, route }) => {
             />
           </View>
         </View>
+
+        {/* 🔔 개발 모드에서만 표시되는 테스트 도구 */}
+        {__DEV__ && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>🔧 개발자 도구</Text>
+            <TouchableOpacity
+              style={styles.testButton}
+              onPress={async () => {
+                try {
+                  await sendTestNotification();
+                  Alert.alert('테스트', '2초 후 테스트 알림이 전송됩니다.');
+                } catch (error) {
+                  console.error('Test notification error:', error);
+                  Alert.alert('오류', '테스트 알림 전송 중 오류가 발생했습니다.');
+                }
+              }}
+            >
+              <Ionicons name="notifications-outline" size={20} color="#9C27B0" />
+              <Text style={styles.testButtonText}>테스트 알림 전송</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </ScrollView>
 
       {/* CustomPicker들 */}
@@ -635,6 +736,24 @@ const styles = StyleSheet.create({
     color: '#1976D2',
     lineHeight: 16,
   },
+  // 🔔 알림 정보 스타일
+  notificationInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF8E1',
+    margin: 15,
+    marginTop: 0,
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  notificationInfoText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#F57C00',
+    lineHeight: 16,
+    fontWeight: '500',
+  },
   section: {
     backgroundColor: '#fff',
     marginTop: 20,
@@ -655,6 +774,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#333',
+    marginBottom: 8,
+  },
+  // 🔔 라벨과 아이콘 스타일
+  labelWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 8,
   },
   textInput: {
@@ -712,6 +838,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  // 🔔 테스트 버튼 스타일
+  testButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F3E5F5',
+    borderWidth: 1,
+    borderColor: '#E1BEE7',
+    borderRadius: 8,
+    padding: 12,
+    marginHorizontal: 20,
+    gap: 8,
+  },
+  testButtonText: {
+    color: '#9C27B0',
+    fontSize: 14,
+    fontWeight: '500',
   },
 });
 
