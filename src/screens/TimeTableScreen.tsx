@@ -675,22 +675,29 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
                   ]}
                   onPress={() => handleCellPress(day, time)}
                 >
-                  {getEventsForDateAndTime(day, time).map((event, eventIndex) => (
-                    <View
-                      key={`${event.id}-${eventIndex}`}
-                      style={[
-                        styles.eventBlock,
-                        getEventStyle(event.category),
-                      ]}
-                    >
-                      <Text style={styles.eventTitle} numberOfLines={1}>
-                        {event.title}
-                        {event.is_recurring && (
-                          <Text style={styles.recurringIndicator}> ↻</Text>
-                        )}
-                      </Text>
-                    </View>
-                  ))}
+                  {getEventsForDateAndTime(day, time).map((event, eventIndex) => {
+                    const isException = !!(event as any).exception_id;
+                    return (
+                      <View
+                        key={`${event.id}-${eventIndex}`}
+                        style={[
+                          styles.eventBlock,
+                          getEventStyle(event.category),
+                          isException && styles.exceptionEventBlock, // 예외 스타일 추가
+                        ]}
+                      >
+                        <Text style={styles.eventTitle} numberOfLines={1}>
+                          {event.title}
+                          {event.is_recurring && !isException && (
+                            <Text style={styles.recurringIndicator}> ↻</Text>
+                          )}
+                          {isException && (
+                            <Text style={styles.exceptionIndicator}> ✱</Text>
+                          )}
+                        </Text>
+                      </View>
+                    );
+                  })}
                 </TouchableOpacity>
               );
             })}
@@ -1141,6 +1148,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  exceptionEventBlock: {
+    borderWidth: 2,
+    borderColor: '#FF9500',
+    borderStyle: 'dashed',
+  },
+  exceptionIndicator: {
+    fontSize: 8,
+    opacity: 0.8,
+    color: '#FF9500',
   },
 });
 

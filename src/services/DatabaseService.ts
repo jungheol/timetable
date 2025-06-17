@@ -69,6 +69,24 @@ export interface RecurringPattern {
   del_yn?: boolean;
 }
 
+export interface RecurringException {
+  id: number;
+  recurring_event_id: number;
+  exception_date: string;           // YYYY-MM-DD
+  exception_type: 'modify' | 'cancel';
+  
+  // 수정된 내용 (modify인 경우)
+  modified_title?: string;
+  modified_start_time?: string;
+  modified_end_time?: string;
+  modified_category?: '학교/기관' | '학원' | '공부' | '휴식' | '선택안함';
+  modified_academy_id?: number;
+  
+  created_at?: string;
+  updated_at?: string;
+  del_yn?: boolean;
+}
+
 export interface Holiday {
   id: number;
   date: string;           // YYYY-MM-DD 형식
@@ -164,6 +182,30 @@ class DatabaseService {
         );
       `);
 
+      // 반복 예외 패턴 테이블
+      await this.db.execAsync(`
+        CREATE TABLE IF NOT EXISTS recurring_exceptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          recurring_event_id INTEGER NOT NULL,
+          exception_date TEXT NOT NULL,
+          exception_type TEXT CHECK(exception_type IN ('modify', 'cancel')) NOT NULL,
+          
+          modified_title TEXT,
+          modified_start_time TEXT,
+          modified_end_time TEXT,
+          modified_category TEXT CHECK(modified_category IN ('학교/기관', '학원', '공부', '휴식', '선택안함')),
+          modified_academy_id INTEGER,
+          
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          del_yn BOOLEAN DEFAULT FALSE,
+          
+          FOREIGN KEY (recurring_event_id) REFERENCES events(id),
+          FOREIGN KEY (modified_academy_id) REFERENCES academies(id),
+          UNIQUE(recurring_event_id, exception_date)
+        );
+      `);
+
       // 학원 테이블
       await this.db.execAsync(`
         CREATE TABLE IF NOT EXISTS academies (
@@ -249,6 +291,11 @@ class DatabaseService {
       await this.db.execAsync(`
         CREATE INDEX IF NOT EXISTS idx_holidays_year 
         ON holidays(year) WHERE del_yn = FALSE;
+      `);
+
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_recurring_exceptions_event_date 
+        ON recurring_exceptions(recurring_event_id, exception_date) WHERE del_yn = FALSE;
       `);
 
     } catch (error) {
@@ -737,47 +784,54 @@ async deleteSchedule(id: number): Promise<void> {
     try {
       const db = await this.ensureDbConnection();
       
-      console.log('Getting events for period:', startDate, 'to', endDate); // 디버깅용
-      
-      // 1. 일반 일정 조회
+      // 1. 일반 일정 조회 (기존과 동일)
       const regularEvents = await db.getAllAsync<Event>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject
-         FROM events e
-         LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
-         WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 0
-         AND e.event_date BETWEEN ? AND ?
-         ORDER BY e.start_time`,
+        FROM events e
+        LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+        WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 0
+        AND e.event_date BETWEEN ? AND ?
+        ORDER BY e.start_time`,
         [scheduleId, startDate, endDate]
       );
       
-      console.log('Regular events found:', regularEvents.length); // 디버깅용
-      
-      // 2. 반복 일정 조회
+      // 2. 반복 일정 조회 (기존과 동일)
       const recurringEvents = await db.getAllAsync<any>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject, 
                 rp.monday, rp.tuesday, rp.wednesday, rp.thursday, 
                 rp.friday, rp.saturday, rp.sunday, 
                 rp.start_date, rp.end_date
-         FROM events e
-         LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
-         INNER JOIN recurring_patterns rp ON e.recurring_group_id = rp.id
-         WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 1
-         AND rp.del_yn = 0
-         AND rp.start_date <= ?
-         AND (rp.end_date IS NULL OR rp.end_date >= ?)`,
+        FROM events e
+        LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
+        INNER JOIN recurring_patterns rp ON e.recurring_group_id = rp.id
+        WHERE e.schedule_id = ? AND e.del_yn = 0 AND e.is_recurring = 1
+        AND rp.del_yn = 0
+        AND rp.start_date <= ?
+        AND (rp.end_date IS NULL OR rp.end_date >= ?)`,
         [scheduleId, endDate, startDate]
       );
       
-      console.log('Recurring event patterns found:', recurringEvents.length); // 디버깅용
-      
-      // 3. 반복 일정을 날짜별로 확장
+      // 3. 반복 일정을 날짜별로 확장 (예외 처리 포함)
       const expandedRecurringEvents: Event[] = [];
       for (const recurringEvent of recurringEvents) {
+        // 기본 날짜들 생성
         const dates = this.generateRecurringDates(recurringEvent, startDate, endDate);
-        console.log(`Expanding recurring event "${recurringEvent.title}" for dates:`, dates); // 디버깅용
+        
+        // 해당 반복 일정의 예외들 조회
+        const exceptions = await this.getRecurringExceptions(recurringEvent.id, startDate, endDate);
+        const exceptionMap = new Map<string, RecurringException>();
+        exceptions.forEach(ex => exceptionMap.set(ex.exception_date, ex));
         
         for (const date of dates) {
-          expandedRecurringEvents.push({
+          const exception = exceptionMap.get(date);
+          
+          if (exception && exception.exception_type === 'cancel') {
+            // 취소된 날짜는 건너뛰기
+            continue;
+          }
+          
+          // 기본 이벤트 생성
+          const eventForDate: Event = {
             id: recurringEvent.id,
             schedule_id: recurringEvent.schedule_id,
             title: recurringEvent.title,
@@ -791,19 +845,35 @@ async deleteSchedule(id: number): Promise<void> {
             created_at: recurringEvent.created_at,
             updated_at: recurringEvent.updated_at,
             del_yn: recurringEvent.del_yn,
-            // 추가 정보
             academy_name: recurringEvent.academy_name,
             academy_subject: recurringEvent.academy_subject,
-          } as any);
+          } as any;
+          
+          // 수정 예외가 있는 경우 적용
+          if (exception && exception.exception_type === 'modify') {
+            if (exception.modified_title) eventForDate.title = exception.modified_title;
+            if (exception.modified_start_time) eventForDate.start_time = exception.modified_start_time;
+            if (exception.modified_end_time) eventForDate.end_time = exception.modified_end_time;
+            if (exception.modified_category) eventForDate.category = exception.modified_category;
+            if (exception.modified_academy_id) {
+              eventForDate.academy_id = exception.modified_academy_id;
+              // 수정된 학원 정보도 가져와야 함 (최적화 가능)
+            }
+            // 예외 ID를 특별히 표시 (UI에서 구분용)
+            (eventForDate as any).exception_id = exception.id;
+          }
+          
+          expandedRecurringEvents.push(eventForDate);
         }
       }
       
-      console.log('Expanded recurring events:', expandedRecurringEvents.length); // 디버깅용
-      
       const allEvents = [...regularEvents, ...expandedRecurringEvents];
-      console.log('Total events returned:', allEvents.length); // 디버깅용
-      
-      return allEvents;
+      return allEvents.sort((a, b) => {
+        if (a.event_date !== b.event_date) {
+          return a.event_date!.localeCompare(b.event_date!);
+        }
+        return a.start_time.localeCompare(b.start_time);
+      });
     } catch (error) {
       console.error('Error getting events with recurring:', error);
       throw error;
@@ -1095,6 +1165,90 @@ async deleteSchedule(id: number): Promise<void> {
       return result || null;
     } catch (error) {
       console.error('Error getting event details:', error);
+      throw error;
+    }
+  }
+
+  // 예외 생성
+  async createRecurringException(exception: Omit<RecurringException, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.runAsync(
+        `INSERT INTO recurring_exceptions (
+          recurring_event_id, exception_date, exception_type,
+          modified_title, modified_start_time, modified_end_time,
+          modified_category, modified_academy_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          exception.recurring_event_id,
+          exception.exception_date,
+          exception.exception_type,
+          exception.modified_title ?? null,
+          exception.modified_start_time ?? null,
+          exception.modified_end_time ?? null,
+          exception.modified_category ?? null,
+          exception.modified_academy_id ?? null,
+        ]
+      );
+      return result.lastInsertRowId;
+    } catch (error) {
+      console.error('Error creating recurring exception:', error);
+      throw error;
+    }
+  }
+
+  // 예외 조회
+  async getRecurringExceptions(eventId: number, startDate: string, endDate: string): Promise<RecurringException[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getAllAsync<RecurringException>(
+        `SELECT * FROM recurring_exceptions 
+        WHERE recurring_event_id = ? 
+          AND exception_date BETWEEN ? AND ? 
+          AND del_yn = 0
+        ORDER BY exception_date`,
+        [eventId, startDate, endDate]
+      );
+      return result;
+    } catch (error) {
+      console.error('Error getting recurring exceptions:', error);
+      throw error;
+    }
+  }
+
+  // 예외 수정
+  async updateRecurringException(exception: RecurringException): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      await db.runAsync(
+        `UPDATE recurring_exceptions SET 
+        exception_type = ?, modified_title = ?, modified_start_time = ?, 
+        modified_end_time = ?, modified_category = ?, modified_academy_id = ?,
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+        [
+          exception.exception_type,
+          exception.modified_title ?? null,
+          exception.modified_start_time ?? null,
+          exception.modified_end_time ?? null,
+          exception.modified_category ?? null,
+          exception.modified_academy_id ?? null,
+          exception.id
+        ]
+      );
+    } catch (error) {
+      console.error('Error updating recurring exception:', error);
+      throw error;
+    }
+  }
+
+  // 예외 삭제
+  async deleteRecurringException(id: number): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      await db.runAsync('UPDATE recurring_exceptions SET del_yn = 1 WHERE id = ?', [id]);
+    } catch (error) {
+      console.error('Error deleting recurring exception:', error);
       throw error;
     }
   }

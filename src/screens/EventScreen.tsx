@@ -9,6 +9,7 @@ import {
   ScrollView,
   Switch,
   SafeAreaView,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import moment from 'moment';
@@ -68,6 +69,11 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
 
+  // 🆕 반복 일정 예외 처리 상태
+  const [showRecurringEditModal, setShowRecurringEditModal] = useState(false);
+  const [isEditingException, setIsEditingException] = useState(false);
+  const [showRecurringDeleteModal, setShowRecurringDeleteModal] = useState(false);
+
   // 요일 데이터
   const weekdays: DayButton[] = [
     { key: 'monday', label: '월', index: 1 },
@@ -125,6 +131,14 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  // 🆕 event 로드 시 예외인지 확인
+  useEffect(() => {
+    if (event && event.is_recurring) {
+      // exception_id가 있으면 예외 편집 모드
+      setIsEditingException(!!(event as any).exception_id);
+    }
+  }, [event]);
 
   const loadInitialData = async () => {
     try {
@@ -291,6 +305,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   };
 
+  // 🆕 수정된 저장 로직
   const handleSave = async () => {
     // 유효성 검사
     if (selectedDays.size === 0) {
@@ -318,10 +333,17 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
 
     try {
       if (isEditMode) {
-        // 편집 모드
-        await updateExistingEvent();
+        if (event?.is_recurring && !isEditingException) {
+          // 반복 일정 편집 - 옵션 선택 모달 표시
+          setShowRecurringEditModal(true);
+          setIsLoading(false);
+          return;
+        } else {
+          // 일반 일정 편집 또는 예외 편집
+          await updateExistingEvent();
+        }
       } else {
-        // 새 일정 생성 모드
+        // 새 일정 생성 (기존과 동일)
         if (isRecurring) {
           await saveRecurringEvent();
         } else {
@@ -337,6 +359,83 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // 🆕 반복 일정 편집 처리
+  const handleRecurringEditConfirm = async (editType: 'this_only' | 'all_future') => {
+    setShowRecurringEditModal(false);
+    setIsLoading(true);
+
+    try {
+      if (editType === 'this_only') {
+        await saveAsException();
+      } else {
+        await updateEntireRecurringSeries();
+      }
+
+      onSave();
+      navigation.goBack();
+    } catch (error) {
+      console.error('Error in recurring edit:', error);
+      Alert.alert('오류', '반복 일정 수정 중 오류가 발생했습니다.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 🆕 예외로 저장
+  const saveAsException = async () => {
+    if (!event?.id || !selectedDate) return;
+
+    const eventTitle = category === '학원' ? academyName : title;
+    let academyId: number | undefined = selectedAcademy?.id;
+    
+    // 학원 카테고리인 경우 학원 생성/조회
+    if (category === '학원' && academyName.trim()) {
+      academyId = await DatabaseService.createAcademyForRecurringEvent(
+        academyName.trim(),
+        selectedSubject,
+        scheduleId
+      );
+    }
+
+    // 기존 예외가 있는지 확인
+    const existingExceptions = await DatabaseService.getRecurringExceptions(
+      event.id, selectedDate, selectedDate
+    );
+
+    if (existingExceptions.length > 0) {
+      // 기존 예외 수정
+      const exception = existingExceptions[0];
+      await DatabaseService.updateRecurringException({
+        ...exception,
+        exception_type: 'modify',
+        modified_title: eventTitle.trim(),
+        modified_start_time: startTime,
+        modified_end_time: endTime,
+        modified_category: category,
+        modified_academy_id: academyId,
+      });
+    } else {
+      // 새 예외 생성
+      await DatabaseService.createRecurringException({
+        recurring_event_id: event.id,
+        exception_date: selectedDate,
+        exception_type: 'modify',
+        modified_title: eventTitle.trim(),
+        modified_start_time: startTime,
+        modified_end_time: endTime,
+        modified_category: category,
+        modified_academy_id: academyId,
+        del_yn: false,
+      });
+    }
+  };
+
+  // 🆕 전체 반복 시리즈 수정
+  const updateEntireRecurringSeries = async () => {
+    // 기존 updateExistingEvent 로직 실행
+    await updateExistingEvent();
   };
 
   const updateExistingEvent = async () => {
@@ -484,66 +583,104 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     console.log('Created recurring event with ID:', eventId);
   };
 
+  // 🆕 수정된 삭제 로직
   const handleDelete = async () => {
     if (!event?.id) return;
 
-    const deleteMessage = event.is_recurring 
-      ? '이 반복 일정을 삭제하시겠습니까? 모든 반복 일정이 삭제됩니다.'
-      : '이 일정을 삭제하시겠습니까?';
-
-    Alert.alert(
-      '일정 삭제',
-      deleteMessage,
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: async () => {
-            setIsLoading(true);
-            try {
-              // 🔔 학원 일정 삭제 시 알림도 함께 처리
-              if (event.category === '학원' && event.academy_id) {
-                try {
-                  // 해당 학원의 다른 일정이 있는지 확인
-                  const relatedEvents = await DatabaseService.getEvents(
-                    scheduleId, 
-                    moment().subtract(1, 'year').format('YYYY-MM-DD'),
-                    moment().add(1, 'year').format('YYYY-MM-DD')
-                  );
-                  
-                  const academyEvents = relatedEvents.filter(e => 
-                    e.academy_id === event.academy_id && e.id !== event.id
-                  );
-                  
-                  // 해당 학원의 마지막 일정이라면 알림도 삭제
-                  if (academyEvents.length === 0) {
-                    await handleAcademyDeleted(event.academy_id);
-                    console.log('✅ Academy notifications deleted for:', event.academy_id);
-                  }
-                } catch (notificationError) {
-                  console.error('❌ Error handling academy notifications:', notificationError);
-                  // 알림 처리 실패해도 일정 삭제는 계속 진행
-                }
-              }
-
-              if (event.is_recurring) {
-                await DatabaseService.deleteRecurringEvent(event.id!);
-              } else {
-                await DatabaseService.deleteEvent(event.id!);
-              }
-              onSave();
-              navigation.goBack();
-            } catch (error) {
-              console.error('Error deleting event:', error);
-              Alert.alert('오류', '일정을 삭제하는 중 오류가 발생했습니다.');
-            } finally {
-              setIsLoading(false);
-            }
+    if (event.is_recurring) {
+      setShowRecurringDeleteModal(true);
+    } else {
+      // 일반 일정 삭제 (기존과 동일)
+      Alert.alert(
+        '일정 삭제',
+        '이 일정을 삭제하시겠습니까?',
+        [
+          { text: '취소', style: 'cancel' },
+          {
+            text: '삭제',
+            style: 'destructive',
+            onPress: async () => {
+              await deleteSingleEvent();
+            },
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
+  };
+
+  // 🆕 반복 일정 삭제 처리
+  const handleRecurringDeleteConfirm = async (deleteType: 'this_only' | 'all_future' | 'restore') => {
+    setShowRecurringDeleteModal(false);
+    setIsLoading(true);
+
+    try {
+      if (deleteType === 'this_only') {
+        // 이번만 삭제 - 취소 예외 생성
+        await DatabaseService.createRecurringException({
+          recurring_event_id: event!.id!,
+          exception_date: selectedDate!,
+          exception_type: 'cancel',
+          del_yn: false,
+        });
+      } else if (deleteType === 'all_future') {
+        // 전체 삭제
+        await DatabaseService.deleteRecurringEvent(event!.id!);
+      } else if (deleteType === 'restore') {
+        // 예외 되돌리기
+        const exceptionId = (event as any).exception_id;
+        if (exceptionId) {
+          await DatabaseService.deleteRecurringException(exceptionId);
+        }
+      }
+
+      onSave();
+      navigation.goBack();
+    } catch (error) {
+      console.error('Error in recurring delete:', error);
+      Alert.alert('오류', '반복 일정 삭제 중 오류가 발생했습니다.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 🆕 단일 일정 삭제
+  const deleteSingleEvent = async () => {
+    setIsLoading(true);
+    try {
+      // 🔔 학원 일정 삭제 시 알림도 함께 처리
+      if (event!.category === '학원' && event!.academy_id) {
+        try {
+          // 해당 학원의 다른 일정이 있는지 확인
+          const relatedEvents = await DatabaseService.getEvents(
+            scheduleId, 
+            moment().subtract(1, 'year').format('YYYY-MM-DD'),
+            moment().add(1, 'year').format('YYYY-MM-DD')
+          );
+          
+          const academyEvents = relatedEvents.filter(e => 
+            e.academy_id === event!.academy_id && e.id !== event!.id
+          );
+          
+          // 해당 학원의 마지막 일정이라면 알림도 삭제
+          if (academyEvents.length === 0) {
+            await handleAcademyDeleted(event!.academy_id);
+            console.log('✅ Academy notifications deleted for:', event!.academy_id);
+          }
+        } catch (notificationError) {
+          console.error('❌ Error handling academy notifications:', notificationError);
+          // 알림 처리 실패해도 일정 삭제는 계속 진행
+        }
+      }
+
+      await DatabaseService.deleteEvent(event!.id!);
+      onSave();
+      navigation.goBack();
+    } catch (error) {
+      console.error('Error deleting event:', error);
+      Alert.alert('오류', '일정을 삭제하는 중 오류가 발생했습니다.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCancel = () => {
@@ -559,7 +696,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </TouchableOpacity>
         
         <Text style={styles.headerTitle}>
-          {isEditMode ? '수정' : '추가'}
+          {isEditMode ? (isEditingException ? '예외 수정' : '수정') : '추가'}
         </Text>
         
         <View style={styles.headerRight}>
@@ -579,6 +716,16 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        {/* 🆕 예외 편집 알림 */}
+        {isEditingException && (
+          <View style={styles.exceptionInfo}>
+            <Ionicons name="information-circle-outline" size={16} color="#FF9500" />
+            <Text style={styles.exceptionInfoText}>
+              이 날짜만 수정된 일정입니다. 원래 반복 일정으로 되돌리려면 삭제 버튼을 눌러주세요.
+            </Text>
+          </View>
+        )}
+
         {/* 🔔 알림 관련 정보 표시 (학원 카테고리일 때만) */}
         {category === '학원' && (
           <View style={styles.notificationInfo}>
@@ -600,6 +747,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
                   selectedDays.has(day.key) && styles.dayButtonSelected
                 ]}
                 onPress={() => toggleDay(day.key)}
+                disabled={isEditMode && event?.is_recurring && !isEditingException}
               >
                 <Text style={[
                   styles.dayButtonText,
@@ -757,13 +905,13 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 기존 반복 일정 편집 시 안내 메시지 */}
-        {isEditMode && event?.is_recurring && (
+        {/* 🆕 반복 일정 정보 표시 */}
+        {isEditMode && event?.is_recurring && !isEditingException && (
           <View style={styles.section}>
-            <View style={styles.infoContainer}>
-              <Ionicons name="information-circle-outline" size={20} color="#FF9500" />
-              <Text style={styles.infoText}>
-                반복 일정은 개별 수정이 불가능합니다. 삭제 후 새로 생성해주세요.
+            <View style={styles.recurringInfo}>
+              <Ionicons name="refresh-outline" size={20} color="#007AFF" />
+              <Text style={styles.recurringInfoText}>
+                이 일정은 반복 일정입니다. 수정 시 옵션을 선택할 수 있습니다.
               </Text>
             </View>
           </View>
@@ -783,6 +931,128 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           />
         </View>
       </ScrollView>
+
+      {/* 🆕 반복 일정 편집 옵션 모달 */}
+      <Modal
+        visible={showRecurringEditModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowRecurringEditModal(false)}
+      >
+        <View style={styles.recurringModalOverlay}>
+          <View style={styles.recurringModalContainer}>
+            <Text style={styles.recurringModalTitle}>반복 일정 편집</Text>
+            <Text style={styles.recurringModalDescription}>
+              이 일정은 반복 일정입니다. 어떻게 수정하시겠습니까?
+            </Text>
+            
+            <TouchableOpacity
+              style={styles.recurringOptionButton}
+              onPress={() => handleRecurringEditConfirm('this_only')}
+            >
+              <View style={styles.recurringOptionContent}>
+                <Text style={styles.recurringOptionTitle}>이번만 수정</Text>
+                <Text style={styles.recurringOptionDescription}>
+                  {moment(selectedDate).format('M월 D일')} 일정만 수정합니다
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={styles.recurringOptionButton}
+              onPress={() => handleRecurringEditConfirm('all_future')}
+            >
+              <View style={styles.recurringOptionContent}>
+                <Text style={styles.recurringOptionTitle}>앞으로 모두 수정</Text>
+                <Text style={styles.recurringOptionDescription}>
+                  반복 패턴 자체를 변경하여 모든 미래 일정에 적용합니다
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={styles.recurringCancelButton}
+              onPress={() => setShowRecurringEditModal(false)}
+            >
+              <Text style={styles.recurringCancelText}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 🆕 반복 일정 삭제 옵션 모달 */}
+      <Modal
+        visible={showRecurringDeleteModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowRecurringDeleteModal(false)}
+      >
+        <View style={styles.recurringModalOverlay}>
+          <View style={styles.recurringModalContainer}>
+            <Text style={styles.recurringModalTitle}>
+              {isEditingException ? '예외 삭제' : '반복 일정 삭제'}
+            </Text>
+            <Text style={styles.recurringModalDescription}>
+              {isEditingException 
+                ? '이 날짜의 수정사항을 제거하고 원래 반복 일정으로 되돌리시겠습니까?'
+                : '이 반복 일정을 어떻게 삭제하시겠습니까?'
+              }
+            </Text>
+            
+            {isEditingException ? (
+              <TouchableOpacity
+                style={styles.recurringOptionButton}
+                onPress={() => handleRecurringDeleteConfirm('restore')}
+              >
+                <View style={styles.recurringOptionContent}>
+                  <Text style={styles.recurringOptionTitle}>원래대로 되돌리기</Text>
+                  <Text style={styles.recurringOptionDescription}>
+                    {moment(selectedDate).format('M월 D일')} 수정사항을 제거하고 원래 반복 일정으로 복원합니다
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#666" />
+              </TouchableOpacity>
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={styles.recurringOptionButton}
+                  onPress={() => handleRecurringDeleteConfirm('this_only')}
+                >
+                  <View style={styles.recurringOptionContent}>
+                    <Text style={styles.recurringOptionTitle}>이번만 삭제</Text>
+                    <Text style={styles.recurringOptionDescription}>
+                      {moment(selectedDate).format('M월 D일')} 일정만 삭제합니다
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color="#666" />
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.recurringOptionButton, styles.dangerOption]}
+                  onPress={() => handleRecurringDeleteConfirm('all_future')}
+                >
+                  <View style={styles.recurringOptionContent}>
+                    <Text style={[styles.recurringOptionTitle, styles.dangerText]}>전체 삭제</Text>
+                    <Text style={[styles.recurringOptionDescription, styles.dangerText]}>
+                      모든 반복 일정을 삭제합니다 (복구 불가)
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color="#FF3B30" />
+                </TouchableOpacity>
+              </>
+            )}
+            
+            <TouchableOpacity
+              style={styles.recurringCancelButton}
+              onPress={() => setShowRecurringDeleteModal(false)}
+            >
+              <Text style={styles.recurringCancelText}>취소</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* CustomPicker들 */}
       <CustomPicker
@@ -865,6 +1135,25 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 20,
+  },
+  // 🆕 예외 편집 정보 스타일
+  exceptionInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF3E0',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#FFE0B2',
+  },
+  exceptionInfoText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#F57C00',
+    lineHeight: 16,
+    fontWeight: '500',
   },
   // 🔔 알림 정보 스타일 추가
   notificationInfo: {
@@ -1064,21 +1353,102 @@ const styles = StyleSheet.create({
     color: '#333',
     fontWeight: '500',
   },
-  // 정보 컨테이너
-  infoContainer: {
+  // 🆕 반복 일정 정보 컨테이너
+  recurringInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFF3CD',
+    backgroundColor: '#E3F2FD',
     borderRadius: 12,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#FFE69C',
+    borderColor: '#BBDEFB',
   },
-  infoText: {
+  recurringInfoText: {
     fontSize: 14,
-    color: '#856404',
+    color: '#1976D2',
     marginLeft: 8,
     flex: 1,
+    fontWeight: '500',
+  },
+  // 🆕 반복 편집 모달 스타일
+  recurringModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  recurringModalContainer: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 24,
+    width: '100%',
+    maxWidth: 380,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  recurringModalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  recurringModalDescription: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 20,
+  },
+  recurringOptionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  recurringOptionContent: {
+    flex: 1,
+  },
+  recurringOptionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 4,
+  },
+  recurringOptionDescription: {
+    fontSize: 13,
+    color: '#666',
+    lineHeight: 16,
+  },
+  dangerOption: {
+    backgroundColor: '#FFF5F5',
+    borderColor: '#FED7D7',
+  },
+  dangerText: {
+    color: '#FF3B30',
+  },
+  recurringCancelButton: {
+    backgroundColor: '#e9ecef',
+    borderRadius: 8,
+    padding: 16,
+    marginTop: 8,
+  },
+  recurringCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+    textAlign: 'center',
   },
 });
 
