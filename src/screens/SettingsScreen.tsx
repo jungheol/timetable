@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import * as Application from 'expo-application';
 import NotificationService from '../services/NotificationService';
 
 interface SettingsTabProps {
@@ -24,16 +25,20 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
   const [notificationEnabled, setNotificationEnabled] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [systemPermissionGranted, setSystemPermissionGranted] = useState(false);
+  const [appVersion, setAppVersion] = useState('1.0.0'); // 기본값
 
   useEffect(() => {
+    // 앱 버전 정보 가져오기
+    getAppVersion();
+    
     // 알림 서비스 초기화 및 설정 로드
     initializeSettings();
 
     // AppState 변경 감지 (앱이 백그라운드에서 포그라운드로 돌아올 때)
     const handleAppStateChange = (nextAppState: string) => {
       if (nextAppState === 'active') {
-        console.log('📱 App became active - checking permissions');
-        checkAndSyncPermissions();
+        console.log('📱 App became active - syncing notification settings');
+        handleAppResume();
       }
     };
 
@@ -44,13 +49,70 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     };
   }, []);
 
+  // 앱 버전 정보 가져오기
+  const getAppVersion = async () => {
+    try {
+      // Expo Application을 사용하여 네이티브 앱 버전 가져오기
+      const version = Application.nativeApplicationVersion;
+      const buildVersion = Application.nativeBuildVersion;
+      
+      if (version) {
+        // 버전과 빌드 버전이 모두 있는 경우
+        if (buildVersion && buildVersion !== version) {
+          setAppVersion(`${version} (${buildVersion})`);
+        } else {
+          setAppVersion(version);
+        }
+        console.log('📱 App version loaded:', version, 'Build:', buildVersion);
+      } else {
+        // 버전을 가져올 수 없는 경우 기본값 유지
+        console.log('⚠️ Could not get app version, using default');
+      }
+    } catch (error) {
+      console.error('❌ Error getting app version:', error);
+      // 오류 발생 시 기본값 유지
+    }
+  };
+
   // 화면이 포커스될 때마다 권한 상태 체크
   useFocusEffect(
     React.useCallback(() => {
       console.log('📱 Settings screen focused - checking permissions');
-      checkAndSyncPermissions();
-    }, [])
+      if (!isInitializing) {
+        checkAndSyncPermissions();
+      }
+    }, [isInitializing])
   );
+
+  // 앱이 포그라운드로 돌아올 때 처리
+  const handleAppResume = async () => {
+    try {
+      const syncResult = await NotificationService.checkAndSyncOnAppResume();
+      
+      if (syncResult.changed) {
+        console.log('🔄 [Settings] Notification setting changed during app resume');
+        setNotificationEnabled(syncResult.appEnabled);
+        setSystemPermissionGranted(syncResult.systemGranted);
+        
+        // 설정이 변경되었음을 사용자에게 알림
+        if (syncResult.systemGranted && syncResult.appEnabled) {
+          Alert.alert(
+            '알림 설정 활성화',
+            '시스템 설정에서 알림을 허용하여 결제일 알림이 활성화되었습니다.',
+            [{ text: '확인' }]
+          );
+        } else if (!syncResult.systemGranted) {
+          Alert.alert(
+            '알림 설정 비활성화',
+            '시스템 설정에서 알림이 비활성화되어 결제일 알림이 중지되었습니다.',
+            [{ text: '확인' }]
+          );
+        }
+      }
+    } catch (error) {
+      console.error('❌ [Settings] Error handling app resume:', error);
+    }
+  };
 
   // 권한 상태 체크 및 동기화
   const checkAndSyncPermissions = async () => {
@@ -64,26 +126,8 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
       console.log('🔍 [Settings] Saved app setting:', savedEnabled);
       
       setSystemPermissionGranted(permissions.granted);
-
-      // 시스템 권한과 앱 설정 동기화
-      if (!permissions.granted) {
-        // 시스템 권한이 없으면 앱 설정도 false로
-        if (savedEnabled === true) {
-          console.log('🔄 [Settings] System permission revoked - updating app setting');
-          await NotificationService.setPaymentNotificationEnabled(false);
-        }
-        setNotificationEnabled(false);
-      } else {
-        // 시스템 권한이 있으면 저장된 설정 사용
-        if (savedEnabled === null || savedEnabled === undefined) {
-          // 처음 설치하거나 설정이 없는 경우 - 자동 활성화
-          console.log('✅ [Settings] First time with permissions - auto-enabling');
-          await NotificationService.setPaymentNotificationEnabled(true);
-          setNotificationEnabled(true);
-        } else {
-          setNotificationEnabled(savedEnabled);
-        }
-      }
+      setNotificationEnabled(savedEnabled === true && permissions.granted);
+      
     } catch (error) {
       console.error('❌ [Settings] Error checking permissions:', error);
       setNotificationEnabled(false);
@@ -96,7 +140,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     try {
       setIsInitializing(true);
       
-      // 알림 서비스 초기화
+      // 알림 서비스 초기화 (기존 방식 유지 - 첫 실행 시 권한 요청됨)
       await NotificationService.initialize();
 
       // 권한 상태 체크 및 동기화
@@ -111,112 +155,44 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     }
   };
 
-  // 결제일 알림 토글
+  // 🔔 결제일 알림 토글 - 항상 시스템 설정으로 이동
   const toggleNotification = async (value: boolean) => {
     try {
-      console.log('🔄 [Settings] Toggling notification to:', value);
+      console.log('🔄 [Settings] Notification toggle pressed:', value);
       
       if (value) {
-        // 알림을 켜려고 할 때 - 시스템 권한 먼저 체크
-        const permissions = await NotificationService.checkPermissions();
-        console.log('🔍 [Settings] Current permissions:', permissions);
-        
-        if (!permissions.granted) {
-          if (permissions.canAskAgain) {
-            Alert.alert(
-              '알림 권한 필요',
-              '결제일 알림을 받으려면 알림 권한이 필요합니다.',
-              [
-                { text: '취소', style: 'cancel' },
-                { 
-                  text: '권한 허용', 
-                  onPress: async () => {
-                    const granted = await NotificationService.requestPermissions();
-                    if (granted) {
-                      await enableNotifications();
-                    } else {
-                      Alert.alert('알림 권한', '알림 권한이 거부되어 알림을 받을 수 없습니다.');
-                    }
-                  }
-                },
-              ]
-            );
-          } else {
-            Alert.alert(
-              '알림 권한 필요',
-              '설정 > 알림에서 앱의 알림 권한을 허용해주세요.\n\n설정 완료 후 앱으로 돌아오면 자동으로 알림이 활성화됩니다.',
-              [
-                { text: '확인' },
-                { 
-                  text: '설정으로 이동', 
-                  onPress: () => {
-                    Linking.openSettings();
-                    // 설정으로 이동했음을 알림
-                    Alert.alert(
-                      '안내',
-                      '설정에서 알림을 허용한 후 앱으로 돌아오세요.\n앱으로 돌아오면 자동으로 알림 설정이 활성화됩니다.',
-                      [{ text: '확인' }]
-                    );
-                  }
-                }
-              ]
-            );
-          }
-          return;
-        }
-        
-        await enableNotifications();
-      } else {
-        await disableNotifications();
-      }
-    } catch (error) {
-      console.error('❌ [Settings] 알림 설정 오류:', error);
-      Alert.alert('오류', '알림 설정 중 오류가 발생했습니다.');
-      // 오류 시 현재 상태로 되돌리기
-      await checkAndSyncPermissions();
-    }
-  };
-
-  // 알림 활성화
-  const enableNotifications = async () => {
-    try {
-      console.log('✅ [Settings] Enabling notifications');
-      await NotificationService.setPaymentNotificationEnabled(true);
-      setNotificationEnabled(true);
-      setSystemPermissionGranted(true);
-      
-      Alert.alert(
-        '알림 설정 완료',
-        '결제일 알림이 활성화되었습니다.\n\n📅 학원 결제일 1일 전\n🕰️ 오전 8시\n\n💡 학원 관리에서 결제일을 설정하면 알림을 받으실 수 있습니다.',
-        [
-          { text: '확인' },
-          { 
-            text: '테스트 알림', 
-            onPress: async () => {
-              try {
-                await NotificationService.sendTestNotification();
-                Alert.alert('테스트 알림', '2초 후 테스트 알림이 전송됩니다.');
-              } catch (error) {
-                console.error('테스트 알림 오류:', error);
+        // 알림을 켜려고 하는 경우
+        Alert.alert(
+          '알림 권한 설정',
+          '결제일 알림을 받으려면 시스템 설정에서 알림을 허용해주세요.\n\n설정 완료 후 앱으로 돌아오면 자동으로 알림이 활성화됩니다.',
+          [
+            { text: '취소', style: 'cancel' },
+            { 
+              text: '설정으로 이동', 
+              onPress: () => {
+                Linking.openSettings();
               }
             }
-          }
-        ]
-      );
+          ]
+        );
+      } else {
+        // 알림을 끄려고 하는 경우
+        Alert.alert(
+          '알림 설정 변경',
+          '결제일 알림을 비활성화하려면 시스템 설정에서 알림을 비허용해주세요.\n\n설정 완료 후 앱으로 돌아오면 자동으로 알림이 비활성화됩니다.',
+          [
+            { text: '취소', style: 'cancel' },
+            { 
+              text: '설정으로 이동', 
+              onPress: () => {
+                Linking.openSettings();
+              }
+            }
+          ]
+        );
+      }
     } catch (error) {
-      throw error;
-    }
-  };
-
-  // 알림 비활성화
-  const disableNotifications = async () => {
-    try {
-      console.log('🔇 [Settings] Disabling notifications');
-      await NotificationService.setPaymentNotificationEnabled(false);
-      setNotificationEnabled(false);
-      Alert.alert('알림 설정', '결제일 알림이 비활성화되었습니다.');
-    } catch (error) {
-      throw error;
+      console.error('❌ [Settings] 알림 토글 오류:', error);
     }
   };
 
@@ -253,11 +229,11 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     );
   };
 
-  // 개발자에게 문의하기
+  // 개발자에게 문의하기 - 동적 앱 버전 사용
   const handleContact = () => {
-    const email = 'developer@studentscheduler.com'; // 실제 이메일로 교체
+    const email = 'contact@the1095.com';
     const subject = '[학생 스케줄러] 문의사항';
-    const body = '문의사항을 적어주세요.\n\n앱 버전: 1.0.0\n기기: ' + Platform.OS;
+    const body = `문의사항을 적어주세요.\n\n앱 버전: ${appVersion}\n기기: ${Platform.OS}`;
     
     const emailUrl = `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     
@@ -329,12 +305,22 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
             thumbColor={Platform.OS === 'ios' ? '#FFFFFF' : switchValue ? '#FFFFFF' : '#F4F3F4'}
             disabled={disabled || isInitializing}
           />
-          {/* 시스템 권한 상태 표시 */}
-          {!systemPermissionGranted && !isInitializing && (
-            <View style={styles.permissionIndicator}>
-              <Ionicons name="warning" size={16} color="#FF9500" />
-            </View>
-          )}
+          {/* 시스템 설정으로 이동 버튼 */}
+          <TouchableOpacity
+            style={styles.settingsIconButton}
+            onPress={() => {
+              Alert.alert(
+                '시스템 알림 설정',
+                '시스템 설정에서 알림을 관리하세요.\n설정 변경 후 앱으로 돌아오면 자동으로 동기화됩니다.',
+                [
+                  { text: '취소' },
+                  { text: '설정으로 이동', onPress: () => Linking.openSettings() }
+                ]
+              );
+            }}
+          >
+            <Ionicons name="settings-outline" size={18} color="#666" />
+          </TouchableOpacity>
         </View>
       ) : (
         <Ionicons name="chevron-forward" size={20} color="#C7C7CC" />
@@ -407,21 +393,22 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
           </View>
         )}
         
-        {/* 시스템 권한이 없을 때 경고 메시지 */}
-        {!isInitializing && !systemPermissionGranted && (
-          <View style={styles.warningContainer}>
-            <View style={styles.warningContent}>
-              <Ionicons name="warning" size={20} color="#FF9500" />
-              <Text style={styles.warningText}>
-                시스템 알림 권한이 비활성화되어 있습니다.
+        {/* 📱 시스템 설정 안내 */}
+        {!isInitializing && (
+          <View style={styles.systemSettingsInfo}>
+            <View style={styles.systemSettingsContent}>
+              <Ionicons name="information-circle-outline" size={20} color="#007AFF" />
+              <Text style={styles.systemSettingsText}>
+                알림 설정은 시스템 설정에서 관리됩니다.{'\n'}
+                토글을 누르면 설정 화면으로 이동합니다.
               </Text>
             </View>
             <TouchableOpacity 
-              style={styles.settingsButton}
+              style={styles.manualSettingsButton}
               onPress={() => {
                 Alert.alert(
-                  '알림 권한 설정',
-                  '설정 > 알림에서 이 앱의 알림을 허용해주세요.\n\n설정 완료 후 앱으로 돌아오면 자동으로 동기화됩니다.',
+                  '시스템 알림 설정',
+                  '시스템 설정 > 알림에서 이 앱의 알림을 관리하세요.\n\n• 알림 허용: 결제일 알림 활성화\n• 알림 비허용: 결제일 알림 비활성화\n\n설정 변경 후 앱으로 돌아오면 자동으로 동기화됩니다.',
                   [
                     { text: '취소' },
                     { text: '설정으로 이동', onPress: () => Linking.openSettings() }
@@ -429,7 +416,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
                 );
               }}
             >
-              <Text style={styles.settingsButtonText}>설정으로 이동</Text>
+              <Text style={styles.manualSettingsButtonText}>시스템 설정 열기</Text>
               <Ionicons name="open-outline" size={16} color="#007AFF" />
             </TouchableOpacity>
           </View>
@@ -483,7 +470,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
                       const enabled = await NotificationService.getPaymentNotificationEnabled();
                       Alert.alert(
                         '현재 상태',
-                        `시스템 권한: ${permissions.granted ? '허용됨' : '거부됨'}\n앱 설정: ${enabled ? '활성화' : '비활성화'}\n동기화: ${permissions.granted === enabled ? '일치' : '불일치'}`
+                        `시스템 권한: ${permissions.granted ? '허용됨' : '거부됨'}\n앱 설정: ${enabled ? '활성화' : '비활성화'}\n동기화: ${permissions.granted === enabled ? '일치' : '불일치'}\n앱 버전: ${appVersion}`
                       );
                     } catch (error) {
                       console.error('상태 확인 오류:', error);
@@ -498,17 +485,17 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
         )}
         
         {/* 알림 비활성화 시 안내 메시지 */}
-        {!isInitializing && !notificationEnabled && systemPermissionGranted && (
+        {!isInitializing && !notificationEnabled && (
           <View style={styles.notificationInfoContainer}>
             <Text style={styles.notificationDisabledInfo}>
-              🔔 결제일 알림을 활성화하면 학원비 납부를 놓치지 않을 수 있습니다.
+              🔔 시스템 설정에서 알림을 허용하면 학원비 납부를 놓치지 않을 수 있습니다.
             </Text>
           </View>
         )}
       </View>
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>학생 스케줄러 v1.0.0</Text>
+        <Text style={styles.footerText}>학생 스케줄러 v{appVersion}</Text>
         <Text style={styles.footerSubText}>더 나은 학습 계획을 위한 앱</Text>
       </View>
     </ScrollView>
@@ -576,38 +563,40 @@ const styles = StyleSheet.create({
     backgroundColor: '#E5E5EA',
     marginLeft: 52, // 아이콘 너비만큼 들여쓰기
   },
-  // 스위치 컨테이너 추가
+  // 스위치 컨테이너
   switchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  permissionIndicator: {
-    padding: 2,
+  settingsIconButton: {
+    padding: 4,
+    borderRadius: 4,
+    backgroundColor: '#F0F0F0',
   },
-  // 경고 컨테이너 스타일 추가
-  warningContainer: {
-    backgroundColor: '#FFF8E1',
+  // 시스템 설정 안내
+  systemSettingsInfo: {
+    backgroundColor: '#E3F2FD',
     marginHorizontal: 20,
     marginTop: 8,
     padding: 12,
     borderRadius: 8,
     borderLeftWidth: 3,
-    borderLeftColor: '#FF9500',
+    borderLeftColor: '#007AFF',
   },
-  warningContent: {
+  systemSettingsContent: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 8,
     gap: 8,
   },
-  warningText: {
+  systemSettingsText: {
     flex: 1,
-    fontSize: 14,
-    color: '#F57C00',
-    fontWeight: '500',
+    fontSize: 13,
+    color: '#1976D2',
+    lineHeight: 18,
   },
-  settingsButton: {
+  manualSettingsButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -619,7 +608,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     gap: 6,
   },
-  settingsButtonText: {
+  manualSettingsButtonText: {
     fontSize: 14,
     color: '#007AFF',
     fontWeight: '500',

@@ -23,7 +23,7 @@ class NotificationService {
   private initialized: boolean = false;
   
   // 🧪 테스트 모드 설정 (배포 시 false로 변경)
-  private TEST_MODE = true;  // true: 30분 간격 테스트 알림 / false: 정상 알림
+  private TEST_MODE = true;  // true: 1분 간격 테스트 알림 / false: 정상 알림
 
   private constructor() {}
 
@@ -34,29 +34,93 @@ class NotificationService {
     return NotificationService.instance;
   }
 
-  // 알림 서비스 초기화 (로컬 알림만 사용)
+  // 알림 서비스 초기화 (기존 방식 - 첫 실행 시 권한 요청)
   async initialize(): Promise<boolean> {
     try {
       if (this.initialized) return true;
 
       console.log('🔔 Initializing local notification service...');
 
-      // 초기화 시에는 권한 요청하지 않고 현재 상태만 확인
+      // 알림 권한 요청 (기존 방식 유지)
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      console.log('🔍 [NotificationService] Current permission status:', existingStatus);
+      let finalStatus = existingStatus;
+
+      if (existingStatus !== 'granted') {
+        console.log('🔒 Requesting notification permissions...');
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+
+      if (finalStatus !== 'granted') {
+        console.log('❌ Notification permissions denied');
+        // 권한이 거부되어도 서비스는 초기화 완료로 처리
+      } else {
+        console.log('✅ Notification permissions granted');
+        
+        // 권한이 허용된 경우, 기존 설정이 없다면 자동으로 활성화
+        const savedSetting = await this.getPaymentNotificationEnabled();
+        if (savedSetting === null) {
+          console.log('🔄 First time permission granted - enabling notifications');
+          await this.setPaymentNotificationEnabled(true);
+        }
+      }
 
       console.log('✅ Local notification service initialized successfully');
       this.initialized = true;
-      return true;
+      return finalStatus === 'granted';
     } catch (error) {
       console.error('❌ Local notification service initialization error:', error);
+      this.initialized = true;
       return false;
     }
   }
 
-  // 푸시 토큰 가져오기 (로컬 알림에서는 불필요)
-  getExpoPushToken(): string {
-    return 'local-notifications-only';
+  // 🔄 앱이 포그라운드로 돌아올 때 권한 상태 체크 및 동기화
+  async checkAndSyncOnAppResume(): Promise<{ 
+    systemGranted: boolean; 
+    appEnabled: boolean; 
+    changed: boolean;
+  }> {
+    try {
+      const permissions = await this.checkPermissions();
+      const currentAppSetting = await this.getPaymentNotificationEnabled();
+      
+      const systemGranted = permissions.granted;
+      const appEnabled = currentAppSetting === true;
+      
+      console.log('🔍 [Notification] App resume sync check:', {
+        systemGranted,
+        appEnabled,
+        needsSync: systemGranted !== appEnabled
+      });
+      
+      let changed = false;
+      
+      // 시스템 권한과 앱 설정이 다른 경우 동기화
+      if (systemGranted !== appEnabled) {
+        console.log('🔄 [Notification] Syncing app setting with system permission');
+        await AsyncStorage.setItem('payment_notification_enabled', JSON.stringify(systemGranted));
+        
+        if (systemGranted) {
+          // 권한이 허용된 경우 알림 스케줄링
+          await this.scheduleAllPaymentNotifications();
+        } else {
+          // 권한이 거부된 경우 모든 알림 취소
+          await this.cancelAllNotifications();
+        }
+        
+        changed = true;
+      }
+      
+      return { 
+        systemGranted, 
+        appEnabled: systemGranted, // 동기화 후의 상태
+        changed 
+      };
+    } catch (error) {
+      console.error('❌ [Notification] Error in app resume sync:', error);
+      return { systemGranted: false, appEnabled: false, changed: false };
+    }
   }
 
   // 결제일 알림 설정 저장 - 권한 체크 추가
@@ -95,53 +159,17 @@ class NotificationService {
     try {
       const saved = await AsyncStorage.getItem('payment_notification_enabled');
       
-      // ✅ 개선: null, undefined, 빈 문자열 모두 처리
       if (saved === null || saved === undefined || saved === '') {
         console.log('🔍 [Notification] No saved setting found, returning null');
-        return null; // 설정이 없음을 명확히 표시
+        return null;
       }
       
       const parsed = JSON.parse(saved);
       console.log('🔍 [Notification] Loaded saved setting:', parsed);
-      return Boolean(parsed); // 확실하게 boolean으로 변환
+      return Boolean(parsed);
     } catch (error) {
       console.error('❌ [Notification] Error loading setting:', error);
-      return null; // 오류 시에도 null 반환 (첫 설치로 간주)
-    }
-  }
-
-  // 시스템 권한과 앱 설정 동기화 검사
-  async checkAndSyncSettings(): Promise<{ 
-    systemGranted: boolean; 
-    appEnabled: boolean; 
-    synced: boolean; 
-  }> {
-    try {
-      const permissions = await this.checkPermissions();
-      const appSetting = await this.getPaymentNotificationEnabled();
-      
-      const systemGranted = permissions.granted;
-      const appEnabled = appSetting === true;
-      const synced = systemGranted === appEnabled;
-      
-      console.log('🔍 [Notification] Sync check:', {
-        systemGranted,
-        appEnabled,
-        synced
-      });
-      
-      // 시스템 권한이 없는데 앱 설정이 켜져있으면 자동으로 끄기
-      if (!systemGranted && appEnabled) {
-        console.log('🔄 [Notification] Auto-disabling app setting due to revoked system permission');
-        await AsyncStorage.setItem('payment_notification_enabled', JSON.stringify(false));
-        await this.cancelAllNotifications();
-        return { systemGranted, appEnabled: false, synced: true };
-      }
-      
-      return { systemGranted, appEnabled, synced };
-    } catch (error) {
-      console.error('❌ [Notification] Error in sync check:', error);
-      return { systemGranted: false, appEnabled: false, synced: true };
+      return null;
     }
   }
 
@@ -206,7 +234,7 @@ class NotificationService {
       console.log(`📝 Scheduling local notifications for ${academy.name} (payment day: ${paymentDay})`);
 
       if (this.TEST_MODE) {
-        // 🧪 테스트 모드: 30분 간격으로 알림 생성
+        // 🧪 테스트 모드: 1분 간격 알림
         return await this.scheduleTestNotifications(academy);
       } else {
         // 📅 정상 모드: 월별 결제일 알림
@@ -219,21 +247,21 @@ class NotificationService {
     }
   }
 
-  // 🧪 테스트 모드: 30분 간격 알림
+  // 🧪 테스트 모드: 1분 간격 알림
   private async scheduleTestNotifications(academy: any): Promise<number> {
     const now = new Date();
     let scheduledCount = 0;
 
-    // 다음 분부터 시작해서 3시간 동안 30분마다 알림 (총 6개)
-    for (let i = 1; i <= 6; i++) {
-      const notificationTime = new Date(now.getTime() + (1 * 60 * 1000 * i)); // 5분 * i
+    // 1분, 2분, 3분 후에 총 3개의 테스트 알림
+    for (let i = 1; i <= 3; i++) {
+      const notificationTime = new Date(now.getTime() + (i * 60 * 1000)); // i분 후
       const notificationId = `test_payment_${academy.id}_${i}`;
       
       await Notifications.scheduleNotificationAsync({
         identifier: notificationId,
         content: {
           title: '🧪 테스트 결제일 알림',
-          body: `${academy.name} 결제일 테스트 알림 ${i}/6 (${academy.payment_day}일)`,
+          body: `${academy.name} 결제일 테스트 알림 ${i}/3 (${academy.payment_day}일)`,
           data: {
             type: 'payment_reminder_test',
             academyId: academy.id,
@@ -250,6 +278,7 @@ class NotificationService {
       scheduledCount++;
     }
 
+    console.log(`🧪 ${academy.name}: ${scheduledCount} test notifications scheduled`);
     return scheduledCount;
   }
 
@@ -280,7 +309,6 @@ class NotificationService {
 
       const notificationId = `payment_${academy.id}_${targetYear}_${targetMonth}`;
       
-      // 로컬 알림 스케줄링 (Date 객체 직접 사용)
       await Notifications.scheduleNotificationAsync({
         identifier: notificationId,
         content: {
@@ -322,7 +350,6 @@ class NotificationService {
       const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
       
       const academyNotifications = scheduledNotifications.filter(notification => {
-        // 정상 알림과 테스트 알림 모두 포함
         return notification.identifier.startsWith(`payment_${academyId}_`) ||
                notification.identifier.startsWith(`test_payment_${academyId}_`);
       });
@@ -358,7 +385,6 @@ class NotificationService {
   // 즉시 테스트 알림 보내기 (개발/테스트용)
   async sendTestNotification(): Promise<void> {
     try {
-      // 권한 확인
       const permissions = await this.checkPermissions();
       if (!permissions.granted) {
         throw new Error('Notification permission is required for test notification');
@@ -383,10 +409,8 @@ class NotificationService {
   // 학원 정보 변경 시 알림 업데이트
   async updateAcademyNotifications(academyId: number): Promise<void> {
     try {
-      // 해당 학원의 기존 알림 취소
       await this.cancelAcademyNotifications(academyId);
 
-      // 알림이 활성화되어 있는 경우 새로 스케줄링
       const isEnabled = await this.getPaymentNotificationEnabled();
       const permissions = await this.checkPermissions();
       
@@ -409,55 +433,27 @@ class NotificationService {
       console.log('🔔 === 로컬 알림 디버그 정보 ===');
       console.log(`📱 Device: ${Device.isDevice ? 'Real Device' : 'Simulator'}`);
       console.log('💾 Notification Type: Local Notifications Only');
-      console.log(`🧪 Test Mode: ${this.TEST_MODE ? 'ENABLED (30min intervals)' : 'DISABLED (normal mode)'}`);
+      console.log(`🧪 Test Mode: ${this.TEST_MODE ? 'ENABLED (1min intervals)' : 'DISABLED (normal mode)'}`);
       
       const permissions = await this.checkPermissions();
       const isEnabled = await this.getPaymentNotificationEnabled();
-      const syncStatus = await this.checkAndSyncSettings();
       
       console.log(`🔔 System Permission: ${permissions.granted ? 'GRANTED' : 'DENIED'}`);
-      console.log(`🔔 App Setting: ${isEnabled ? 'ENABLED' : 'DISABLED'}`);
-      console.log(`🔄 Sync Status: ${syncStatus.synced ? 'SYNCED' : 'OUT_OF_SYNC'}`);
+      console.log(`🔔 App Setting: ${isEnabled === null ? 'NOT_SET' : (isEnabled ? 'ENABLED' : 'DISABLED')}`);
+      console.log(`🔄 Synced: ${permissions.granted === (isEnabled === true) ? 'YES' : 'NO'}`);
       
       const scheduledNotifications = await this.getScheduledNotifications();
       console.log(`📋 Scheduled Local Notifications: ${scheduledNotifications.length}`);
       
-      // 테스트 알림과 정상 알림 분리해서 표시
       const testNotifications = scheduledNotifications.filter(n => n.data?.type === 'payment_reminder_test');
       const normalNotifications = scheduledNotifications.filter(n => n.data?.type === 'payment_reminder');
       
       if (testNotifications.length > 0) {
         console.log(`🧪 Test Notifications: ${testNotifications.length}`);
-        testNotifications.forEach((notification, index) => {
-          console.log(`  ${index + 1}. ${notification.title}`);
-          console.log(`     📝 Body: ${notification.body}`);
-          console.log(`     ⏰ Trigger: ${JSON.stringify(notification.trigger)}`);
-          console.log('---');
-        });
       }
       
       if (normalNotifications.length > 0) {
         console.log(`📅 Normal Notifications: ${normalNotifications.length}`);
-        normalNotifications.forEach((notification, index) => {
-          console.log(`  ${index + 1}. ${notification.title}`);
-          console.log(`     📝 Body: ${notification.body}`);
-          console.log(`     ⏰ Trigger: ${JSON.stringify(notification.trigger)}`);
-          console.log('---');
-        });
-      }
-      
-      // 현재 활성 학원들 확인
-      const activeSchedule = await DatabaseService.getActiveSchedule();
-      if (activeSchedule) {
-        const academies = await DatabaseService.getAcademiesBySchedule(activeSchedule.id);
-        const activeAcademies = academies.filter(academy => 
-          academy.status === '진행' && academy.payment_day
-        );
-        
-        console.log(`🏫 Active Academies with Payment Days: ${activeAcademies.length}`);
-        activeAcademies.forEach(academy => {
-          console.log(`  - ${academy.name}: ${academy.payment_day}일`);
-        });
       }
       
       console.log('🔔 === 로컬 알림 디버그 정보 끝 ===');
@@ -478,7 +474,7 @@ class NotificationService {
     return this.TEST_MODE;
   }
 
-  // 권한 상태 확인 - 강화된 버전
+  // 권한 상태 확인
   async checkPermissions(): Promise<{
     granted: boolean;
     canAskAgain: boolean;
@@ -487,13 +483,6 @@ class NotificationService {
     try {
       const result = await Notifications.getPermissionsAsync();
       const granted = result.status === 'granted';
-      
-      console.log('🔍 [Notification] Permission check result:', {
-        status: result.status,
-        granted,
-        canAskAgain: result.canAskAgain,
-        ios: result.ios
-      });
       
       return {
         granted,
