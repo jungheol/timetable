@@ -41,20 +41,9 @@ class NotificationService {
 
       console.log('🔔 Initializing local notification service...');
 
-      // 알림 권한 요청
+      // 초기화 시에는 권한 요청하지 않고 현재 상태만 확인
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-
-      if (existingStatus !== 'granted') {
-        console.log('🔒 Requesting notification permissions...');
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-
-      if (finalStatus !== 'granted') {
-        console.log('❌ Notification permissions denied');
-        return false;
-      }
+      console.log('🔍 [NotificationService] Current permission status:', existingStatus);
 
       console.log('✅ Local notification service initialized successfully');
       this.initialized = true;
@@ -70,10 +59,20 @@ class NotificationService {
     return 'local-notifications-only';
   }
 
-  // 결제일 알림 설정 저장
+  // 결제일 알림 설정 저장 - 권한 체크 추가
   async setPaymentNotificationEnabled(enabled: boolean): Promise<void> {
     try {
       console.log('💾 [Notification] Saving setting:', enabled);
+      
+      if (enabled) {
+        // 알림을 켜려고 할 때 권한 재확인
+        const permissions = await this.checkPermissions();
+        if (!permissions.granted) {
+          console.log('❌ [Notification] Cannot enable - no system permission');
+          throw new Error('System notification permission is required');
+        }
+      }
+      
       await AsyncStorage.setItem('payment_notification_enabled', JSON.stringify(enabled));
       
       // ✅ 저장 후 검증
@@ -111,9 +110,51 @@ class NotificationService {
     }
   }
 
+  // 시스템 권한과 앱 설정 동기화 검사
+  async checkAndSyncSettings(): Promise<{ 
+    systemGranted: boolean; 
+    appEnabled: boolean; 
+    synced: boolean; 
+  }> {
+    try {
+      const permissions = await this.checkPermissions();
+      const appSetting = await this.getPaymentNotificationEnabled();
+      
+      const systemGranted = permissions.granted;
+      const appEnabled = appSetting === true;
+      const synced = systemGranted === appEnabled;
+      
+      console.log('🔍 [Notification] Sync check:', {
+        systemGranted,
+        appEnabled,
+        synced
+      });
+      
+      // 시스템 권한이 없는데 앱 설정이 켜져있으면 자동으로 끄기
+      if (!systemGranted && appEnabled) {
+        console.log('🔄 [Notification] Auto-disabling app setting due to revoked system permission');
+        await AsyncStorage.setItem('payment_notification_enabled', JSON.stringify(false));
+        await this.cancelAllNotifications();
+        return { systemGranted, appEnabled: false, synced: true };
+      }
+      
+      return { systemGranted, appEnabled, synced };
+    } catch (error) {
+      console.error('❌ [Notification] Error in sync check:', error);
+      return { systemGranted: false, appEnabled: false, synced: true };
+    }
+  }
+
   // 모든 결제일 알림 스케줄링
   async scheduleAllPaymentNotifications(): Promise<void> {
     try {
+      // 권한 재확인
+      const permissions = await this.checkPermissions();
+      if (!permissions.granted) {
+        console.log('❌ [Notification] Cannot schedule - no system permission');
+        return;
+      }
+
       // 기존 알림 모두 취소
       await this.cancelAllNotifications();
 
@@ -317,6 +358,12 @@ class NotificationService {
   // 즉시 테스트 알림 보내기 (개발/테스트용)
   async sendTestNotification(): Promise<void> {
     try {
+      // 권한 확인
+      const permissions = await this.checkPermissions();
+      if (!permissions.granted) {
+        throw new Error('Notification permission is required for test notification');
+      }
+
       await Notifications.scheduleNotificationAsync({
         content: {
           title: '🧪 테스트 알림',
@@ -341,7 +388,9 @@ class NotificationService {
 
       // 알림이 활성화되어 있는 경우 새로 스케줄링
       const isEnabled = await this.getPaymentNotificationEnabled();
-      if (isEnabled) {
+      const permissions = await this.checkPermissions();
+      
+      if (isEnabled && permissions.granted) {
         const academy = await DatabaseService.getAcademyById(academyId);
         if (academy && academy.status === '진행' && academy.payment_day) {
           await this.schedulePaymentNotification(academy);
@@ -362,8 +411,13 @@ class NotificationService {
       console.log('💾 Notification Type: Local Notifications Only');
       console.log(`🧪 Test Mode: ${this.TEST_MODE ? 'ENABLED (30min intervals)' : 'DISABLED (normal mode)'}`);
       
+      const permissions = await this.checkPermissions();
       const isEnabled = await this.getPaymentNotificationEnabled();
-      console.log(`🔔 Notification Enabled: ${isEnabled}`);
+      const syncStatus = await this.checkAndSyncSettings();
+      
+      console.log(`🔔 System Permission: ${permissions.granted ? 'GRANTED' : 'DENIED'}`);
+      console.log(`🔔 App Setting: ${isEnabled ? 'ENABLED' : 'DISABLED'}`);
+      console.log(`🔄 Sync Status: ${syncStatus.synced ? 'SYNCED' : 'OUT_OF_SYNC'}`);
       
       const scheduledNotifications = await this.getScheduledNotifications();
       console.log(`📋 Scheduled Local Notifications: ${scheduledNotifications.length}`);
@@ -424,18 +478,27 @@ class NotificationService {
     return this.TEST_MODE;
   }
 
-  // 권한 상태 확인
+  // 권한 상태 확인 - 강화된 버전
   async checkPermissions(): Promise<{
     granted: boolean;
     canAskAgain: boolean;
     status: string;
   }> {
     try {
-      const { status, canAskAgain } = await Notifications.getPermissionsAsync();
+      const result = await Notifications.getPermissionsAsync();
+      const granted = result.status === 'granted';
+      
+      console.log('🔍 [Notification] Permission check result:', {
+        status: result.status,
+        granted,
+        canAskAgain: result.canAskAgain,
+        ios: result.ios
+      });
+      
       return {
-        granted: status === 'granted',
-        canAskAgain,
-        status,
+        granted,
+        canAskAgain: result.canAskAgain ?? false,
+        status: result.status,
       };
     } catch (error) {
       console.error('❌ Error checking permissions:', error);
@@ -450,8 +513,12 @@ class NotificationService {
   // 권한 재요청
   async requestPermissions(): Promise<boolean> {
     try {
+      console.log('🔒 [Notification] Requesting permissions...');
       const { status } = await Notifications.requestPermissionsAsync();
-      return status === 'granted';
+      const granted = status === 'granted';
+      
+      console.log('🔍 [Notification] Permission request result:', { status, granted });
+      return granted;
     } catch (error) {
       console.error('❌ Error requesting permissions:', error);
       return false;

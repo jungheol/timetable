@@ -10,8 +10,10 @@ import {
   Linking,
   Share,
   Platform,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import NotificationService from '../services/NotificationService';
 
 interface SettingsTabProps {
@@ -21,13 +23,75 @@ interface SettingsTabProps {
 const SettingsScreen: React.FC<SettingsTabProps> = () => {
   const [notificationEnabled, setNotificationEnabled] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [systemPermissionGranted, setSystemPermissionGranted] = useState(false);
 
   useEffect(() => {
     // 알림 서비스 초기화 및 설정 로드
     initializeSettings();
+
+    // AppState 변경 감지 (앱이 백그라운드에서 포그라운드로 돌아올 때)
+    const handleAppStateChange = (nextAppState: string) => {
+      if (nextAppState === 'active') {
+        console.log('📱 App became active - checking permissions');
+        checkAndSyncPermissions();
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+
+    return () => {
+      subscription?.remove();
+    };
   }, []);
 
-  // 설정 초기화 - 수정된 로직
+  // 화면이 포커스될 때마다 권한 상태 체크
+  useFocusEffect(
+    React.useCallback(() => {
+      console.log('📱 Settings screen focused - checking permissions');
+      checkAndSyncPermissions();
+    }, [])
+  );
+
+  // 권한 상태 체크 및 동기화
+  const checkAndSyncPermissions = async () => {
+    try {
+      console.log('🔍 [Settings] Checking system permissions...');
+      
+      const permissions = await NotificationService.checkPermissions();
+      const savedEnabled = await NotificationService.getPaymentNotificationEnabled();
+      
+      console.log('🔍 [Settings] System permission granted:', permissions.granted);
+      console.log('🔍 [Settings] Saved app setting:', savedEnabled);
+      
+      setSystemPermissionGranted(permissions.granted);
+
+      // 시스템 권한과 앱 설정 동기화
+      if (!permissions.granted) {
+        // 시스템 권한이 없으면 앱 설정도 false로
+        if (savedEnabled === true) {
+          console.log('🔄 [Settings] System permission revoked - updating app setting');
+          await NotificationService.setPaymentNotificationEnabled(false);
+        }
+        setNotificationEnabled(false);
+      } else {
+        // 시스템 권한이 있으면 저장된 설정 사용
+        if (savedEnabled === null || savedEnabled === undefined) {
+          // 처음 설치하거나 설정이 없는 경우 - 자동 활성화
+          console.log('✅ [Settings] First time with permissions - auto-enabling');
+          await NotificationService.setPaymentNotificationEnabled(true);
+          setNotificationEnabled(true);
+        } else {
+          setNotificationEnabled(savedEnabled);
+        }
+      }
+    } catch (error) {
+      console.error('❌ [Settings] Error checking permissions:', error);
+      setNotificationEnabled(false);
+      setSystemPermissionGranted(false);
+    }
+  };
+
+  // 설정 초기화
   const initializeSettings = async () => {
     try {
       setIsInitializing(true);
@@ -35,37 +99,13 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
       // 알림 서비스 초기화
       await NotificationService.initialize();
 
-      // 저장된 알림 설정 로드
-      const savedEnabled = await NotificationService.getPaymentNotificationEnabled();
-      
-      // 권한 상태 확인
-      const permissions = await NotificationService.checkPermissions();
-      
-      console.log('🔍 [Settings] Saved notification setting:', savedEnabled);
-      console.log('🔍 [Settings] System permissions:', permissions);
-      
-      // ✅ 수정된 로직: 시스템 권한이 허용되어 있다면 기본적으로 알림 활성화
-      if (permissions.granted) {
-        // 권한이 있는 경우
-        if (savedEnabled === null || savedEnabled === undefined) {
-          // 처음 설치하거나 설정이 없는 경우 - 자동 활성화
-          console.log('✅ [Settings] First time setup - auto-enabling notifications');
-          await NotificationService.setPaymentNotificationEnabled(true);
-          setNotificationEnabled(true);
-        } else {
-          // 이미 설정이 있는 경우 - 저장된 값 사용
-          setNotificationEnabled(savedEnabled);
-          console.log('🔧 [Settings] Using saved setting:', savedEnabled);
-        }
-      } else {
-        // 권한이 없는 경우 - 무조건 false
-        setNotificationEnabled(false);
-        console.log('🔇 [Settings] No permissions - setting to false');
-      }
+      // 권한 상태 체크 및 동기화
+      await checkAndSyncPermissions();
       
     } catch (error) {
       console.error('❌ [Settings] 설정 초기화 오류:', error);
       setNotificationEnabled(false);
+      setSystemPermissionGranted(false);
     } finally {
       setIsInitializing(false);
     }
@@ -75,10 +115,9 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
   const toggleNotification = async (value: boolean) => {
     try {
       console.log('🔄 [Settings] Toggling notification to:', value);
-      setNotificationEnabled(value);
       
       if (value) {
-        // 권한 확인
+        // 알림을 켜려고 할 때 - 시스템 권한 먼저 체크
         const permissions = await NotificationService.checkPermissions();
         console.log('🔍 [Settings] Current permissions:', permissions);
         
@@ -88,7 +127,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
               '알림 권한 필요',
               '결제일 알림을 받으려면 알림 권한이 필요합니다.',
               [
-                { text: '취소', style: 'cancel', onPress: () => setNotificationEnabled(false) },
+                { text: '취소', style: 'cancel' },
                 { 
                   text: '권한 허용', 
                   onPress: async () => {
@@ -96,7 +135,6 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
                     if (granted) {
                       await enableNotifications();
                     } else {
-                      setNotificationEnabled(false);
                       Alert.alert('알림 권한', '알림 권한이 거부되어 알림을 받을 수 없습니다.');
                     }
                   }
@@ -104,13 +142,23 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
               ]
             );
           } else {
-            setNotificationEnabled(false);
             Alert.alert(
               '알림 권한 필요',
-              '설정 > 알림에서 앱의 알림 권한을 허용해주세요.',
+              '설정 > 알림에서 앱의 알림 권한을 허용해주세요.\n\n설정 완료 후 앱으로 돌아오면 자동으로 알림이 활성화됩니다.',
               [
                 { text: '확인' },
-                { text: '설정으로 이동', onPress: () => Linking.openSettings() }
+                { 
+                  text: '설정으로 이동', 
+                  onPress: () => {
+                    Linking.openSettings();
+                    // 설정으로 이동했음을 알림
+                    Alert.alert(
+                      '안내',
+                      '설정에서 알림을 허용한 후 앱으로 돌아오세요.\n앱으로 돌아오면 자동으로 알림 설정이 활성화됩니다.',
+                      [{ text: '확인' }]
+                    );
+                  }
+                }
               ]
             );
           }
@@ -123,8 +171,9 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
       }
     } catch (error) {
       console.error('❌ [Settings] 알림 설정 오류:', error);
-      setNotificationEnabled(false);
       Alert.alert('오류', '알림 설정 중 오류가 발생했습니다.');
+      // 오류 시 현재 상태로 되돌리기
+      await checkAndSyncPermissions();
     }
   };
 
@@ -133,8 +182,9 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     try {
       console.log('✅ [Settings] Enabling notifications');
       await NotificationService.setPaymentNotificationEnabled(true);
+      setNotificationEnabled(true);
+      setSystemPermissionGranted(true);
       
-      // ✅ 성공 메시지 개선
       Alert.alert(
         '알림 설정 완료',
         '결제일 알림이 활성화되었습니다.\n\n📅 학원 결제일 1일 전\n🕰️ 오전 8시\n\n💡 학원 관리에서 결제일을 설정하면 알림을 받으실 수 있습니다.',
@@ -163,6 +213,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     try {
       console.log('🔇 [Settings] Disabling notifications');
       await NotificationService.setPaymentNotificationEnabled(false);
+      setNotificationEnabled(false);
       Alert.alert('알림 설정', '결제일 알림이 비활성화되었습니다.');
     } catch (error) {
       throw error;
@@ -270,13 +321,21 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
       </View>
       
       {showSwitch ? (
-        <Switch
-          value={switchValue}
-          onValueChange={onSwitchChange}
-          trackColor={{ false: '#E5E5EA', true: '#34C759' }}
-          thumbColor={Platform.OS === 'ios' ? '#FFFFFF' : switchValue ? '#FFFFFF' : '#F4F3F4'}
-          disabled={disabled || isInitializing}
-        />
+        <View style={styles.switchContainer}>
+          <Switch
+            value={switchValue}
+            onValueChange={onSwitchChange}
+            trackColor={{ false: '#E5E5EA', true: '#34C759' }}
+            thumbColor={Platform.OS === 'ios' ? '#FFFFFF' : switchValue ? '#FFFFFF' : '#F4F3F4'}
+            disabled={disabled || isInitializing}
+          />
+          {/* 시스템 권한 상태 표시 */}
+          {!systemPermissionGranted && !isInitializing && (
+            <View style={styles.permissionIndicator}>
+              <Ionicons name="warning" size={16} color="#FF9500" />
+            </View>
+          )}
+        </View>
       ) : (
         <Ionicons name="chevron-forward" size={20} color="#C7C7CC" />
       )}
@@ -339,7 +398,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
           />
         </View>
         
-        {/* ✅ 초기화 중 표시 */}
+        {/* 초기화 중 표시 */}
         {isInitializing && (
           <View style={styles.notificationInfoContainer}>
             <Text style={styles.notificationInfo}>
@@ -348,8 +407,36 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
           </View>
         )}
         
-        {/* ✅ 알림 정보 개선 */}
-        {!isInitializing && notificationEnabled && (
+        {/* 시스템 권한이 없을 때 경고 메시지 */}
+        {!isInitializing && !systemPermissionGranted && (
+          <View style={styles.warningContainer}>
+            <View style={styles.warningContent}>
+              <Ionicons name="warning" size={20} color="#FF9500" />
+              <Text style={styles.warningText}>
+                시스템 알림 권한이 비활성화되어 있습니다.
+              </Text>
+            </View>
+            <TouchableOpacity 
+              style={styles.settingsButton}
+              onPress={() => {
+                Alert.alert(
+                  '알림 권한 설정',
+                  '설정 > 알림에서 이 앱의 알림을 허용해주세요.\n\n설정 완료 후 앱으로 돌아오면 자동으로 동기화됩니다.',
+                  [
+                    { text: '취소' },
+                    { text: '설정으로 이동', onPress: () => Linking.openSettings() }
+                  ]
+                );
+              }}
+            >
+              <Text style={styles.settingsButtonText}>설정으로 이동</Text>
+              <Ionicons name="open-outline" size={16} color="#007AFF" />
+            </TouchableOpacity>
+          </View>
+        )}
+        
+        {/* 알림 활성화 시 정보 */}
+        {!isInitializing && notificationEnabled && systemPermissionGranted && (
           <View style={styles.notificationInfoContainer}>
             <Text style={styles.notificationInfo}>
               💡 학원 결제일 1일 전 오전 8시에 알림을 받습니다.
@@ -396,7 +483,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
                       const enabled = await NotificationService.getPaymentNotificationEnabled();
                       Alert.alert(
                         '현재 상태',
-                        `권한: ${permissions.granted ? '허용됨' : '거부됨'}\n설정: ${enabled ? '활성화' : '비활성화'}`
+                        `시스템 권한: ${permissions.granted ? '허용됨' : '거부됨'}\n앱 설정: ${enabled ? '활성화' : '비활성화'}\n동기화: ${permissions.granted === enabled ? '일치' : '불일치'}`
                       );
                     } catch (error) {
                       console.error('상태 확인 오류:', error);
@@ -410,8 +497,8 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
           </View>
         )}
         
-        {/* ✅ 알림 비활성화 시 안내 메시지 */}
-        {!isInitializing && !notificationEnabled && (
+        {/* 알림 비활성화 시 안내 메시지 */}
+        {!isInitializing && !notificationEnabled && systemPermissionGranted && (
           <View style={styles.notificationInfoContainer}>
             <Text style={styles.notificationDisabledInfo}>
               🔔 결제일 알림을 활성화하면 학원비 납부를 놓치지 않을 수 있습니다.
@@ -489,6 +576,54 @@ const styles = StyleSheet.create({
     backgroundColor: '#E5E5EA',
     marginLeft: 52, // 아이콘 너비만큼 들여쓰기
   },
+  // 스위치 컨테이너 추가
+  switchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  permissionIndicator: {
+    padding: 2,
+  },
+  // 경고 컨테이너 스타일 추가
+  warningContainer: {
+    backgroundColor: '#FFF8E1',
+    marginHorizontal: 20,
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: '#FF9500',
+  },
+  warningContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 8,
+  },
+  warningText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#F57C00',
+    fontWeight: '500',
+  },
+  settingsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#007AFF',
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 6,
+  },
+  settingsButtonText: {
+    fontSize: 14,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
   notificationInfoContainer: {
     marginHorizontal: 20,
     marginTop: 8,
@@ -498,7 +633,6 @@ const styles = StyleSheet.create({
     color: '#6D6D70',
     paddingHorizontal: 16,
   },
-  // ✅ 추가된 스타일
   notificationSubInfo: {
     fontSize: 12,
     color: '#FF9500',
