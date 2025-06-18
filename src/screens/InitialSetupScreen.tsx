@@ -30,85 +30,150 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete, navigation, rout
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
   
-  // 공휴일 로딩 상태
+  // 공휴일 로딩 상태 - 디버깅 정보 추가
   const [isLoadingHolidays, setIsLoadingHolidays] = useState(false);
   const [holidayLoadStep, setHolidayLoadStep] = useState('');
   const [holidayLoadComplete, setHolidayLoadComplete] = useState(false);
+  const [holidayErrors, setHolidayErrors] = useState<string[]>([]);
+  const [holidayDebugInfo, setHolidayDebugInfo] = useState<string[]>([]);
+  const [showHolidayDebug, setShowHolidayDebug] = useState(false);
 
   // 컴포넌트 마운트 시 백그라운드에서 공휴일 로딩 시작
   useEffect(() => {
     initializeHolidaysInBackground();
   }, []);
 
-  // 백그라운드에서 공휴일 데이터 초기화
+  // 백그라운드에서 공휴일 데이터 초기화 - 에러 처리 강화
   const initializeHolidaysInBackground = async () => {
     try {
       console.log('🎌 [Setup] Starting background holiday initialization...');
       setIsLoadingHolidays(true);
       setHolidayLoadStep('공휴일 데이터를 확인하는 중...');
+      setHolidayErrors([]);
+      setHolidayDebugInfo([]);
+      
+      // 디버그 정보 초기화
+      const debugInfo: string[] = [];
+      const errors: string[] = [];
       
       // DB에서 현재 연도와 다음 연도 공휴일 확인
       const currentYear = new Date().getFullYear();
       const nextYear = currentYear + 1;
       
-      const currentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
-      const nextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
+      debugInfo.push(`🎌 확인 중인 연도: ${currentYear}, ${nextYear}`);
       
-      console.log(`🎌 [Setup] Current year (${currentYear}) holidays in DB: ${currentYearHolidays.length}`);
-      console.log(`🎌 [Setup] Next year (${nextYear}) holidays in DB: ${nextYearHolidays.length}`);
-      
-      let needsCurrentYear = currentYearHolidays.length === 0;
-      let needsNextYear = nextYearHolidays.length === 0;
-      
-      if (needsCurrentYear || needsNextYear) {
-        setHolidayLoadStep('API에서 공휴일 정보를 가져오는 중...');
+      try {
+        const currentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
+        const nextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
         
-        if (needsCurrentYear) {
-          console.log(`🎌 [Setup] Fetching ${currentYear} holidays from API...`);
-          try {
-            const fetchedCurrentYear = await HolidayService.getHolidaysForYear(currentYear);
-            console.log(`🎌 [Setup] Fetched ${fetchedCurrentYear.length} holidays for ${currentYear}`);
-            setHolidayLoadStep(`${currentYear}년 공휴일 ${fetchedCurrentYear.length}개 로드 완료`);
-          } catch (error) {
-            console.warn(`🎌 [Setup] Failed to fetch ${currentYear} holidays:`, error);
-            setHolidayLoadStep(`${currentYear}년 공휴일 로드 실패`);
+        debugInfo.push(`📊 DB 내 ${currentYear}년 공휴일: ${currentYearHolidays.length}개`);
+        debugInfo.push(`📊 DB 내 ${nextYear}년 공휴일: ${nextYearHolidays.length}개`);
+        
+        console.log(`🎌 [Setup] Current year (${currentYear}) holidays in DB: ${currentYearHolidays.length}`);
+        console.log(`🎌 [Setup] Next year (${nextYear}) holidays in DB: ${nextYearHolidays.length}`);
+        
+        let needsCurrentYear = currentYearHolidays.length === 0;
+        let needsNextYear = nextYearHolidays.length === 0;
+        
+        if (needsCurrentYear || needsNextYear) {
+          setHolidayLoadStep('API에서 공휴일 정보를 가져오는 중...');
+          debugInfo.push('🌐 API 호출 시작');
+          
+          if (needsCurrentYear) {
+            debugInfo.push(`📡 ${currentYear}년 공휴일 API 호출 중...`);
+            console.log(`🎌 [Setup] Fetching ${currentYear} holidays from API...`);
+            
+            try {
+              const fetchedCurrentYear = await HolidayService.getHolidaysForYear(currentYear);
+              console.log(`🎌 [Setup] Fetched ${fetchedCurrentYear.length} holidays for ${currentYear}`);
+              
+              debugInfo.push(`✅ ${currentYear}년: ${fetchedCurrentYear.length}개 공휴일 로드`);
+              setHolidayLoadStep(`${currentYear}년 공휴일 ${fetchedCurrentYear.length}개 로드 완료`);
+              
+              if (fetchedCurrentYear.length === 0) {
+                errors.push(`⚠️ ${currentYear}년 공휴일 데이터가 없습니다.`);
+              }
+            } catch (error: any) {
+              const errorMsg = `❌ ${currentYear}년 공휴일 로드 실패: ${error.message || 'Unknown error'}`;
+              console.warn(`🎌 [Setup] Failed to fetch ${currentYear} holidays:`, error);
+              errors.push(errorMsg);
+              debugInfo.push(errorMsg);
+              
+              // 네트워크 오류 상세 정보
+              if (error.name === 'TypeError' && error.message.includes('Network request failed')) {
+                errors.push('🌐 네트워크 연결 문제가 발생했습니다.');
+              } else if (error.name === 'AbortError') {
+                errors.push('⏰ API 요청 시간이 초과되었습니다.');
+              }
+              
+              setHolidayLoadStep(`${currentYear}년 공휴일 로드 실패`);
+            }
           }
+          
+          if (needsNextYear) {
+            debugInfo.push(`📡 ${nextYear}년 공휴일 API 호출 중...`);
+            console.log(`🎌 [Setup] Fetching ${nextYear} holidays from API...`);
+            
+            try {
+              const fetchedNextYear = await HolidayService.getHolidaysForYear(nextYear);
+              console.log(`🎌 [Setup] Fetched ${fetchedNextYear.length} holidays for ${nextYear}`);
+              
+              debugInfo.push(`✅ ${nextYear}년: ${fetchedNextYear.length}개 공휴일 로드`);
+              setHolidayLoadStep(`${nextYear}년 공휴일 ${fetchedNextYear.length}개 로드 완료`);
+              
+              if (fetchedNextYear.length === 0) {
+                errors.push(`⚠️ ${nextYear}년 공휴일 데이터가 없습니다.`);
+              }
+            } catch (error: any) {
+              const errorMsg = `❌ ${nextYear}년 공휴일 로드 실패: ${error.message || 'Unknown error'}`;
+              console.warn(`🎌 [Setup] Failed to fetch ${nextYear} holidays:`, error);
+              errors.push(errorMsg);
+              debugInfo.push(errorMsg);
+              setHolidayLoadStep(`${nextYear}년 공휴일 로드 실패`);
+            }
+          }
+          
+          setHolidayLoadStep('공휴일 데이터 준비 완료');
+        } else {
+          setHolidayLoadStep('기존 공휴일 데이터 사용');
+          debugInfo.push('✅ 기존 DB 데이터 사용');
+          console.log('🎌 [Setup] Using existing holiday data from DB');
         }
         
-        if (needsNextYear) {
-          console.log(`🎌 [Setup] Fetching ${nextYear} holidays from API...`);
-          try {
-            const fetchedNextYear = await HolidayService.getHolidaysForYear(nextYear);
-            console.log(`🎌 [Setup] Fetched ${fetchedNextYear.length} holidays for ${nextYear}`);
-            setHolidayLoadStep(`${nextYear}년 공휴일 ${fetchedNextYear.length}개 로드 완료`);
-          } catch (error) {
-            console.warn(`🎌 [Setup] Failed to fetch ${nextYear} holidays:`, error);
-            setHolidayLoadStep(`${nextYear}년 공휴일 로드 실패`);
-          }
-        }
+        // 최종 확인
+        const finalCurrentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
+        const finalNextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
         
-        setHolidayLoadStep('공휴일 데이터 준비 완료');
-      } else {
-        setHolidayLoadStep('기존 공휴일 데이터 사용');
-        console.log('🎌 [Setup] Using existing holiday data from DB');
+        debugInfo.push(`📊 최종 결과 - ${currentYear}: ${finalCurrentYearHolidays.length}개, ${nextYear}: ${finalNextYearHolidays.length}개`);
+        
+        console.log(`🎌 [Setup] Final holiday count - ${currentYear}: ${finalCurrentYearHolidays.length}, ${nextYear}: ${finalNextYearHolidays.length}`);
+        
+        setHolidayLoadComplete(true);
+        
+      } catch (dbError: any) {
+        const errorMsg = `💾 데이터베이스 오류: ${dbError.message || 'Unknown DB error'}`;
+        errors.push(errorMsg);
+        debugInfo.push(errorMsg);
+        console.error('🎌 [Setup] Database error:', dbError);
       }
       
-      // 최종 확인
-      const finalCurrentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
-      const finalNextYearHolidays = await DatabaseService.getHolidaysByYear(nextYear);
+      // 디버그 정보 업데이트
+      setHolidayDebugInfo(debugInfo);
+      setHolidayErrors(errors);
       
-      console.log(`🎌 [Setup] Final holiday count - ${currentYear}: ${finalCurrentYearHolidays.length}, ${nextYear}: ${finalNextYearHolidays.length}`);
-      
-      setHolidayLoadComplete(true);
-      
-    } catch (error) {
+    } catch (error: any) {
+      const errorMsg = `🚨 전체 공휴일 초기화 오류: ${error.message || 'Unknown error'}`;
       console.error('🎌 [Setup] Holiday initialization error:', error);
+      
+      setHolidayErrors(prev => [...prev, errorMsg]);
+      setHolidayDebugInfo(prev => [...prev, errorMsg]);
       setHolidayLoadStep('공휴일 데이터 로드 실패 (선택사항)');
       setHolidayLoadComplete(true); // 실패해도 완료로 처리
     } finally {
       setIsLoadingHolidays(false);
     }
   };
+
   // timeUnit에 따른 시간 옵션 생성 (메모화)
   const timeOptions = useMemo(() => {
     const options: string[] = [];
@@ -178,8 +243,24 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete, navigation, rout
     setShowEndTimePicker(false);
   };
 
-  // 공휴일 데이터 초기화 (제거 - 이제 백그라운드에서 처리)
-  // const initializeHolidays = async () => { ... } 
+  // 공휴일 디버그 정보 표시
+  const showHolidayDebugInfo = () => {
+    const debugText = holidayDebugInfo.join('\n');
+    const errorText = holidayErrors.length > 0 ? '\n\n❌ 오류 목록:\n' + holidayErrors.join('\n') : '';
+    
+    Alert.alert(
+      '공휴일 로딩 디버그 정보',
+      debugText + errorText,
+      [
+        { text: '복사', onPress: () => {
+          // 클립보드에 복사 기능은 expo-clipboard 라이브러리가 필요하므로 로그로 대체
+          console.log('🎌 HOLIDAY DEBUG INFO:\n' + debugText + errorText);
+          Alert.alert('정보', '디버그 정보가 콘솔에 출력되었습니다.');
+        }},
+        { text: '확인' }
+      ]
+    );
+  };
 
   const handleSave = async () => {
     if (startTime >= endTime) {
@@ -452,23 +533,110 @@ const InitialSetupScreen: React.FC<Props> = ({ onSetupComplete, navigation, rout
           </Text>
         </TouchableOpacity>
 
-        {/* 설정 완료 시 공휴일 로딩에 대한 안내 */}
+        {/* 공휴일 정보 및 디버깅 섹션 - 확장됨 */}
         <View style={styles.holidayNoticeContainer}>
-          <Text style={styles.holidayNotice}>
-            💡 공휴일 정보를 백그라운드에서 자동으로 로드합니다.
-          </Text>
+          <View style={styles.holidayNoticeHeader}>
+            <Text style={styles.holidayNotice}>
+              💡 공휴일 정보를 백그라운드에서 자동으로 로드합니다.
+            </Text>
+            <TouchableOpacity
+              style={styles.debugToggleButton}
+              onPress={() => setShowHolidayDebug(!showHolidayDebug)}
+            >
+              <Ionicons 
+                name={showHolidayDebug ? "chevron-up" : "chevron-down"} 
+                size={16} 
+                color="#007AFF" 
+              />
+            </TouchableOpacity>
+          </View>
+          
+          {/* 현재 상태 표시 */}
           {isLoadingHolidays && (
             <View style={styles.holidayStatus}>
               <ActivityIndicator size="small" color="#007AFF" />
               <Text style={styles.holidayStatusText}>{holidayLoadStep}</Text>
             </View>
           )}
+          
           {holidayLoadComplete && !isLoadingHolidays && (
             <View style={styles.holidayStatus}>
-              <Ionicons name="checkmark-circle" size={16} color="#34C759" />
-              <Text style={[styles.holidayStatusText, { color: '#34C759' }]}>
-                공휴일 데이터 준비 완료
+              <Ionicons 
+                name={holidayErrors.length > 0 ? "warning" : "checkmark-circle"} 
+                size={16} 
+                color={holidayErrors.length > 0 ? "#FF9500" : "#34C759"} 
+              />
+              <Text style={[
+                styles.holidayStatusText, 
+                { color: holidayErrors.length > 0 ? "#FF9500" : "#34C759" }
+              ]}>
+                {holidayErrors.length > 0 ? '공휴일 로드 중 일부 오류 발생' : '공휴일 데이터 준비 완료'}
               </Text>
+            </View>
+          )}
+
+          {/* 오류 요약 표시 */}
+          {holidayErrors.length > 0 && (
+            <View style={styles.errorSummary}>
+              <Text style={styles.errorSummaryText}>
+                ⚠️ {holidayErrors.length}개의 오류가 발생했습니다
+              </Text>
+            </View>
+          )}
+
+          {/* 디버그 정보 표시 영역 */}
+          {showHolidayDebug && (
+            <View style={styles.debugInfoContainer}>
+              <View style={styles.debugHeader}>
+                <Text style={styles.debugTitle}>🔍 공휴일 로딩 상세 정보</Text>
+                <TouchableOpacity
+                  style={styles.debugDetailButton}
+                  onPress={showHolidayDebugInfo}
+                >
+                  <Text style={styles.debugDetailButtonText}>전체 보기</Text>
+                </TouchableOpacity>
+              </View>
+              
+              {/* 디버그 정보 요약 */}
+              <ScrollView style={styles.debugInfoScroll} nestedScrollEnabled>
+                {holidayDebugInfo.slice(-5).map((info, index) => (
+                  <Text key={index} style={styles.debugInfoText}>
+                    {info}
+                  </Text>
+                ))}
+              </ScrollView>
+              
+              {/* 오류 정보 */}
+              {holidayErrors.length > 0 && (
+                <View style={styles.errorContainer}>
+                  <Text style={styles.errorTitle}>❌ 발생한 오류:</Text>
+                  {holidayErrors.slice(-3).map((error, index) => (
+                    <Text key={index} style={styles.errorText}>
+                      {error}
+                    </Text>
+                  ))}
+                </View>
+              )}
+              
+              {/* 액션 버튼들 */}
+              <View style={styles.debugActions}>
+                <TouchableOpacity
+                  style={styles.debugActionButton}
+                  onPress={() => {
+                    // API 재시도
+                    initializeHolidaysInBackground();
+                  }}
+                >
+                  <Text style={styles.debugActionButtonText}>🔄 재시도</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={styles.debugActionButton}
+                  onPress={showHolidayDebugInfo}
+                >
+                  <Text style={styles.debugActionButtonText}>📋 상세 로그</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         </View>
@@ -605,6 +773,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
   },
+  // 공휴일 디버깅 스타일들
   holidayNoticeContainer: {
     marginTop: 15,
     backgroundColor: '#f0f8ff',
@@ -613,11 +782,20 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: '#007AFF',
   },
+  holidayNoticeHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   holidayNotice: {
     fontSize: 12,
     color: '#666',
-    textAlign: 'center',
     lineHeight: 18,
+    flex: 1,
+  },
+  debugToggleButton: {
+    padding: 4,
+    marginLeft: 8,
   },
   holidayStatus: {
     flexDirection: 'row',
@@ -629,6 +807,97 @@ const styles = StyleSheet.create({
   holidayStatusText: {
     fontSize: 12,
     color: '#007AFF',
+    fontWeight: '500',
+  },
+  errorSummary: {
+    marginTop: 8,
+    padding: 8,
+    backgroundColor: '#FFF3CD',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#FFEAA7',
+  },
+  errorSummaryText: {
+    fontSize: 12,
+    color: '#856404',
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  debugInfoContainer: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#dee2e6',
+  },
+  debugHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  debugTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#495057',
+  },
+  debugDetailButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#007AFF',
+    borderRadius: 4,
+  },
+  debugDetailButtonText: {
+    fontSize: 11,
+    color: '#fff',
+    fontWeight: '500',
+  },
+  debugInfoScroll: {
+    maxHeight: 120,
+    marginVertical: 8,
+  },
+  debugInfoText: {
+    fontSize: 11,
+    color: '#6c757d',
+    marginBottom: 2,
+  },
+  errorContainer: {
+    marginTop: 8,
+    padding: 8,
+    backgroundColor: '#f8d7da',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#f5c6cb',
+  },
+  errorTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#721c24',
+    marginBottom: 4,
+  },
+  errorText: {
+    fontSize: 11,
+    color: '#721c24',
+    marginBottom: 2,
+  },
+  debugActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginTop: 12,
+    gap: 8,
+  },
+  debugActionButton: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#6c757d',
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  debugActionButtonText: {
+    fontSize: 12,
+    color: '#fff',
     fontWeight: '500',
   },
   // 로딩 오버레이 스타일

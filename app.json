@@ -26,19 +26,13 @@
           "NSExceptionDomains": {
             "apis.data.go.kr": {
               "NSExceptionAllowsInsecureHTTPLoads": false,
-              "NSExceptionMinimumTLSVersion": "TLSv1.2",
+              "NSExceptionMinimumTLSVersion": "TLSv1.0",
               "NSExceptionRequiresForwardSecrecy": false,
               "NSIncludesSubdomains": true
             },
             "data.go.kr": {
               "NSExceptionAllowsInsecureHTTPLoads": false,
-              "NSExceptionMinimumTLSVersion": "TLSv1.2",
-              "NSExceptionRequiresForwardSecrecy": false,
-              "NSIncludesSubdomains": true
-            },
-            "www.data.go.kr": {
-              "NSExceptionAllowsInsecureHTTPLoads": false,
-              "NSExceptionMinimumTLSVersion": "TLSv1.2",
+              "NSExceptionMinimumTLSVersion": "TLSv1.0",
               "NSExceptionRequiresForwardSecrecy": false,
               "NSIncludesSubdomains": true
             }
