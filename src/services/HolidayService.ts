@@ -130,7 +130,7 @@ class HolidayService {
   // API URL 구성
   private buildApiUrl(year: number, month: number): string {
     const params = new URLSearchParams({
-      serviceKey: this.SERVICE_KEY,
+      serviceKey: encodeURIComponent(this.SERVICE_KEY),
       pageNo: '1',
       numOfRows: '100',
       solYear: year.toString(),
