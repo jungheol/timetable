@@ -20,41 +20,54 @@ interface SettingsTabProps {
 
 const SettingsScreen: React.FC<SettingsTabProps> = () => {
   const [notificationEnabled, setNotificationEnabled] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
     // 알림 서비스 초기화 및 설정 로드
     initializeSettings();
   }, []);
 
-  // 설정 초기화
+  // 설정 초기화 - 수정된 로직
   const initializeSettings = async () => {
     try {
+      setIsInitializing(true);
+      
       // 알림 서비스 초기화
       await NotificationService.initialize();
 
       // 저장된 알림 설정 로드
       const savedEnabled = await NotificationService.getPaymentNotificationEnabled();
       
-      // 💡 핵심 수정: 권한 상태도 함께 확인
+      // 권한 상태 확인
       const permissions = await NotificationService.checkPermissions();
       
       console.log('🔍 [Settings] Saved notification setting:', savedEnabled);
       console.log('🔍 [Settings] System permissions:', permissions);
       
-      // 시스템 권한이 있고, 저장된 설정이 없다면 자동으로 활성화
-      if (permissions.granted && savedEnabled === null) {
-        console.log('✅ [Settings] Auto-enabling notifications (permissions granted, no saved setting)');
-        await NotificationService.setPaymentNotificationEnabled(true);
-        setNotificationEnabled(true);
+      // ✅ 수정된 로직: 시스템 권한이 허용되어 있다면 기본적으로 알림 활성화
+      if (permissions.granted) {
+        // 권한이 있는 경우
+        if (savedEnabled === null || savedEnabled === undefined) {
+          // 처음 설치하거나 설정이 없는 경우 - 자동 활성화
+          console.log('✅ [Settings] First time setup - auto-enabling notifications');
+          await NotificationService.setPaymentNotificationEnabled(true);
+          setNotificationEnabled(true);
+        } else {
+          // 이미 설정이 있는 경우 - 저장된 값 사용
+          setNotificationEnabled(savedEnabled);
+          console.log('🔧 [Settings] Using saved setting:', savedEnabled);
+        }
       } else {
-        // 저장된 설정값 사용 (권한이 없으면 false로 표시)
-        const finalEnabled = permissions.granted ? savedEnabled : false;
-        setNotificationEnabled(finalEnabled);
-        console.log('🔧 [Settings] Final notification state:', finalEnabled);
+        // 권한이 없는 경우 - 무조건 false
+        setNotificationEnabled(false);
+        console.log('🔇 [Settings] No permissions - setting to false');
       }
       
     } catch (error) {
       console.error('❌ [Settings] 설정 초기화 오류:', error);
+      setNotificationEnabled(false);
+    } finally {
+      setIsInitializing(false);
     }
   };
 
@@ -120,9 +133,11 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     try {
       console.log('✅ [Settings] Enabling notifications');
       await NotificationService.setPaymentNotificationEnabled(true);
+      
+      // ✅ 성공 메시지 개선
       Alert.alert(
         '알림 설정 완료',
-        '결제일 알림이 활성화되었습니다.\n\n📅 학원 결제일 1일 전\n🕰️ 오전 8시\n\n알림을 받으실 수 있습니다.',
+        '결제일 알림이 활성화되었습니다.\n\n📅 학원 결제일 1일 전\n🕰️ 오전 8시\n\n💡 학원 관리에서 결제일을 설정하면 알림을 받으실 수 있습니다.',
         [
           { text: '확인' },
           { 
@@ -241,11 +256,12 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
     showSwitch?: boolean;
     switchValue?: boolean;
     onSwitchChange?: (value: boolean) => void;
-  }> = ({ icon, title, onPress, showSwitch, switchValue, onSwitchChange }) => (
+    disabled?: boolean;
+  }> = ({ icon, title, onPress, showSwitch, switchValue, onSwitchChange, disabled }) => (
     <TouchableOpacity
       style={styles.settingItem}
       onPress={onPress}
-      disabled={showSwitch}
+      disabled={showSwitch || disabled}
       activeOpacity={showSwitch ? 1 : 0.7}
     >
       <View style={styles.settingLeft}>
@@ -259,6 +275,7 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
           onValueChange={onSwitchChange}
           trackColor={{ false: '#E5E5EA', true: '#34C759' }}
           thumbColor={Platform.OS === 'ios' ? '#FFFFFF' : switchValue ? '#FFFFFF' : '#F4F3F4'}
+          disabled={disabled || isInitializing}
         />
       ) : (
         <Ionicons name="chevron-forward" size={20} color="#C7C7CC" />
@@ -318,13 +335,27 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
             showSwitch={true}
             switchValue={notificationEnabled}
             onSwitchChange={toggleNotification}
+            disabled={isInitializing}
           />
         </View>
         
-        {notificationEnabled && (
+        {/* ✅ 초기화 중 표시 */}
+        {isInitializing && (
+          <View style={styles.notificationInfoContainer}>
+            <Text style={styles.notificationInfo}>
+              ⏳ 알림 설정을 확인하는 중...
+            </Text>
+          </View>
+        )}
+        
+        {/* ✅ 알림 정보 개선 */}
+        {!isInitializing && notificationEnabled && (
           <View style={styles.notificationInfoContainer}>
             <Text style={styles.notificationInfo}>
               💡 학원 결제일 1일 전 오전 8시에 알림을 받습니다.
+            </Text>
+            <Text style={styles.notificationSubInfo}>
+              📝 학원 관리에서 결제일을 설정해야 알림이 전송됩니다.
             </Text>
             
             {__DEV__ && (
@@ -357,7 +388,6 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
                   <Text style={styles.debugButtonText}>📱 테스트 알림</Text>
                 </TouchableOpacity>
                 
-                {/* 추가 디버그 버튼 */}
                 <TouchableOpacity
                   style={styles.debugButton}
                   onPress={async () => {
@@ -377,6 +407,15 @@ const SettingsScreen: React.FC<SettingsTabProps> = () => {
                 </TouchableOpacity>
               </View>
             )}
+          </View>
+        )}
+        
+        {/* ✅ 알림 비활성화 시 안내 메시지 */}
+        {!isInitializing && !notificationEnabled && (
+          <View style={styles.notificationInfoContainer}>
+            <Text style={styles.notificationDisabledInfo}>
+              🔔 결제일 알림을 활성화하면 학원비 납부를 놓치지 않을 수 있습니다.
+            </Text>
           </View>
         )}
       </View>
@@ -458,6 +497,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#6D6D70',
     paddingHorizontal: 16,
+  },
+  // ✅ 추가된 스타일
+  notificationSubInfo: {
+    fontSize: 12,
+    color: '#FF9500',
+    paddingHorizontal: 16,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  notificationDisabledInfo: {
+    fontSize: 13,
+    color: '#FF9500',
+    paddingHorizontal: 16,
+    fontWeight: '500',
   },
   debugContainer: {
     flexDirection: 'row',

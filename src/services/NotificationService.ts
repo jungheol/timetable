@@ -73,7 +73,12 @@ class NotificationService {
   // 결제일 알림 설정 저장
   async setPaymentNotificationEnabled(enabled: boolean): Promise<void> {
     try {
+      console.log('💾 [Notification] Saving setting:', enabled);
       await AsyncStorage.setItem('payment_notification_enabled', JSON.stringify(enabled));
+      
+      // ✅ 저장 후 검증
+      const verification = await AsyncStorage.getItem('payment_notification_enabled');
+      console.log('✅ [Notification] Setting saved and verified:', verification);
       
       if (enabled) {
         await this.scheduleAllPaymentNotifications();
@@ -81,19 +86,28 @@ class NotificationService {
         await this.cancelAllNotifications();
       }
     } catch (error) {
-      console.error('결제일 알림 설정 저장 오류:', error);
+      console.error('❌ [Notification] Error saving setting:', error);
       throw error;
     }
   }
 
   // 결제일 알림 설정 가져오기
-  async getPaymentNotificationEnabled(): Promise<boolean> {
+  async getPaymentNotificationEnabled(): Promise<boolean | null> {
     try {
       const saved = await AsyncStorage.getItem('payment_notification_enabled');
-      return saved ? JSON.parse(saved) : false;
+      
+      // ✅ 개선: null, undefined, 빈 문자열 모두 처리
+      if (saved === null || saved === undefined || saved === '') {
+        console.log('🔍 [Notification] No saved setting found, returning null');
+        return null; // 설정이 없음을 명확히 표시
+      }
+      
+      const parsed = JSON.parse(saved);
+      console.log('🔍 [Notification] Loaded saved setting:', parsed);
+      return Boolean(parsed); // 확실하게 boolean으로 변환
     } catch (error) {
-      console.error('결제일 알림 설정 로드 오류:', error);
-      return false;
+      console.error('❌ [Notification] Error loading setting:', error);
+      return null; // 오류 시에도 null 반환 (첫 설치로 간주)
     }
   }
 
