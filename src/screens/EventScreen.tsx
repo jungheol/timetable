@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TextInput,
   TouchableOpacity,
-  Alert,
   ScrollView,
   Switch,
   SafeAreaView,
@@ -15,11 +14,8 @@ import { Ionicons } from '@expo/vector-icons';
 import moment from 'moment';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
-import DatabaseService, { Event, Academy, Schedule } from '../services/DatabaseService';
-import { useAcademyNotifications } from '../hooks/useAcademyNotifications';
 import CustomPicker from '../components/CustomPicker';
-
-// App.tsx에서 정의된 타입 import
+import { useEventLogic } from '../hooks/useEventLogic';
 import { RootStackParamList } from '../../App';
 
 type EventScreenNavigationProp = StackNavigationProp<RootStackParamList, 'EventScreen'>;
@@ -30,730 +26,79 @@ interface Props {
   route: EventScreenRouteProp;
 }
 
-interface DayButton {
-  key: string;
-  label: string;
-  index: number;
-}
-
 const EventScreen: React.FC<Props> = ({ navigation, route }) => {
-  const { event, selectedDate, selectedTime, scheduleId, onSave } = route.params;
-
-  // 🔔 알림 훅 추가
+  // 🎯 모든 비즈니스 로직이 커스텀 훅으로 분리됨 (navigation 전달)
   const {
-    handleAcademyCreated,
-    handleAcademyUpdated,
-    handleAcademyDeleted,
-  } = useAcademyNotifications();
+    formData,
+    uiState,
+    options,
+    isEditMode,
+    updateFormData,
+    updateUIState,
+    handleSave,
+    handleDelete,
+    handleRecurringEditConfirm,
+    handleRecurringDeleteConfirm,
+    handleAcademySelect,
+    handleStartTimeConfirm,
+    handleEndTimeConfirm,
+  } = useEventLogic(route.params, navigation); // ✅ navigation 전달
 
-  // 기본 상태
-  const [title, setTitle] = useState('');
-  const [startTime, setStartTime] = useState('');
-  const [endTime, setEndTime] = useState('');
-  const [selectedDays, setSelectedDays] = useState<Set<string>>(new Set());
-  const [category, setCategory] = useState<Event['category']>('선택안함');
-  const [academyName, setAcademyName] = useState('');
-  const [selectedSubject, setSelectedSubject] = useState<Academy['subject']>('국어');
-  const [isRecurring, setIsRecurring] = useState(false);
-  const [memo, setMemo] = useState('');
-  
-  // UI 상태
-  const [schedule, setSchedule] = useState<Schedule | null>(null);
-  const [academies, setAcademies] = useState<Academy[]>([]);
-  const [selectedAcademy, setSelectedAcademy] = useState<Academy | null>(null);
-  const [showStartTimePicker, setShowStartTimePicker] = useState(false);
-  const [showEndTimePicker, setShowEndTimePicker] = useState(false);
-  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
-  const [showSubjectPicker, setShowSubjectPicker] = useState(false);
-  const [showAcademyPicker, setShowAcademyPicker] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isEditMode, setIsEditMode] = useState(false);
+  // 🎯 UI 이벤트 핸들러들 (비즈니스 로직 없이 단순한 상태 업데이트만)
+  const handleCancel = () => navigation.goBack();
 
-  // 🆕 반복 일정 예외 처리 상태
-  const [showRecurringEditModal, setShowRecurringEditModal] = useState(false);
-  const [isEditingException, setIsEditingException] = useState(false);
-  const [showRecurringDeleteModal, setShowRecurringDeleteModal] = useState(false);
-
-  // 요일 데이터
-  const weekdays: DayButton[] = [
-    { key: 'monday', label: '월', index: 1 },
-    { key: 'tuesday', label: '화', index: 2 },
-    { key: 'wednesday', label: '수', index: 3 },
-    { key: 'thursday', label: '목', index: 4 },
-    { key: 'friday', label: '금', index: 5 },
-    { key: 'saturday', label: '토', index: 6 },
-    { key: 'sunday', label: '일', index: 0 },
-  ];
-
-  // 표시할 요일 (주말 포함 여부에 따라)
-  const availableDays = useMemo(() => {
-    if (!schedule) return weekdays.slice(0, 5); // 기본적으로 월-금
-    
-    // ✅ boolean 타입 변환 추가
-    const showWeekend = Boolean(schedule.show_weekend);
-    
-    if (showWeekend) {
-      return weekdays; // 일-토 모든 요일
-    } else {
-      return weekdays.slice(0, 5); // 월-금만
-    }
-  }, [schedule]);
-
-  // 시간 옵션 생성
-  const timeOptions = useMemo(() => {
-    if (!schedule) return [];
-    
-    const options: string[] = [];
-    const startMoment = moment(schedule.start_time, 'HH:mm');
-    const endMoment = moment(schedule.end_time, 'HH:mm');
-    const interval = schedule.time_unit === '30min' ? 30 : 60;
-    
-    let current = startMoment.clone();
-    while (current.isSameOrBefore(endMoment)) {
-      options.push(current.format('HH:mm'));
-      current.add(interval, 'minutes');
-    }
-    
-    return options;
-  }, [schedule]);
-
-  // 카테고리 옵션
-  const categoryOptions = ['학교/기관', '학원', '공부', '휴식', '선택안함'];
-
-  // 과목 옵션
-  const subjectOptions: Academy['subject'][] = ['국어', '수학', '영어', '예체능', '사회과학', '기타'];
-
-  // 학원 선택 옵션
-  const academyOptions = useMemo(() => {
-    return academies.map(academy => ({
-      value: academy.id.toString(),
-      label: `${academy.name} (${academy.subject})`
-    }));
-  }, [academies]);
-
-  useEffect(() => {
-    loadInitialData();
-  }, []);
-
-  // 🆕 event 로드 시 예외인지 확인 - ✅ boolean 변환 추가
-  useEffect(() => {
-    if (event && Boolean(event.is_recurring)) {
-      // exception_id가 있으면 예외 편집 모드
-      setIsEditingException(!!(event as any).exception_id);
-    }
-  }, [event]);
-
-  const loadInitialData = async () => {
-    try {
-      // 스케줄과 현재 스케줄의 학원 정보 로드
-      const [activeSchedule, academyList] = await Promise.all([
-        DatabaseService.getActiveSchedule(),
-        DatabaseService.getAcademiesBySchedule(scheduleId) // ✅ 현재 스케줄의 학원만 조회
-      ]);
-      
-      console.log('📚 Loaded academies for schedule', scheduleId, ':', academyList);
-      
-      setSchedule(activeSchedule);
-      setAcademies(academyList);
-      
-      // 편집 모드 확인 및 폼 초기화
-      if (event) {
-        setIsEditMode(true);
-        await loadEventData(event, academyList);
-      } else {
-        setIsEditMode(false);
-        initializeNewEventForm();
-      }
-    } catch (error) {
-      console.error('Error loading initial data:', error);
-      Alert.alert('오류', '데이터를 불러오는 중 오류가 발생했습니다.');
+  const handleCategoryChange = (newCategory: any) => {
+    updateFormData({ category: newCategory });
+    if (newCategory !== '학원') {
+      updateFormData({
+        academyName: '',
+        selectedSubject: '국어',
+        selectedAcademy: null,
+      });
     }
   };
 
-  // ✅ 데이터 타입 변환 헬퍼 함수 추가
-  const sanitizeEventData = (eventData: any): Event => {
-    return {
-      ...eventData,
-      // boolean 필드들을 명시적으로 변환
-      is_recurring: Boolean(eventData.is_recurring),
-      del_yn: Boolean(eventData.del_yn),
-    };
-  };
-
-  const loadEventData = async (eventData: Event, academyList: Academy[]) => {
-    try {
-      console.log('Loading event data for editing:', eventData);
-      
-      // ✅ 이벤트 데이터 타입 변환
-      const sanitizedEvent = sanitizeEventData(eventData);
-      
-      // 기본 정보 설정
-      setTitle(sanitizedEvent.title);
-      setStartTime(sanitizedEvent.start_time);
-      setEndTime(sanitizedEvent.end_time);
-      setCategory(sanitizedEvent.category);
-      setIsRecurring(sanitizedEvent.is_recurring); // ✅ 이미 boolean으로 변환됨
-      
-      // 현재 선택된 날짜의 요일 구하기
-      const currentDayIndex = moment(selectedDate).day();
-      const currentDayKey = weekdays.find(day => day.index === currentDayIndex)?.key;
-      
-      if (sanitizedEvent.is_recurring && sanitizedEvent.recurring_group_id) {
-        // 반복 일정인 경우 - 반복 패턴에서 요일 정보 가져오기
-        try {
-          const recurringPattern = await DatabaseService.getRecurringPattern(sanitizedEvent.recurring_group_id);
-          if (recurringPattern) {
-            const selectedDaysSet = new Set<string>();
-            // ✅ boolean 타입 변환 추가
-            if (Boolean(recurringPattern.monday)) selectedDaysSet.add('monday');
-            if (Boolean(recurringPattern.tuesday)) selectedDaysSet.add('tuesday');
-            if (Boolean(recurringPattern.wednesday)) selectedDaysSet.add('wednesday');
-            if (Boolean(recurringPattern.thursday)) selectedDaysSet.add('thursday');
-            if (Boolean(recurringPattern.friday)) selectedDaysSet.add('friday');
-            if (Boolean(recurringPattern.saturday)) selectedDaysSet.add('saturday');
-            if (Boolean(recurringPattern.sunday)) selectedDaysSet.add('sunday');
-            setSelectedDays(selectedDaysSet);
-          }
-        } catch (error) {
-          console.error('Error loading recurring pattern:', error);
-          // 반복 패턴을 불러올 수 없는 경우 현재 요일만 선택
-          if (currentDayKey) {
-            setSelectedDays(new Set([currentDayKey]));
-          }
-        }
-      } else {
-        // 일반 일정인 경우 현재 요일 선택
-        if (currentDayKey) {
-          setSelectedDays(new Set([currentDayKey]));
-        }
-      }
-      
-      // 학원 카테고리인 경우 학원 정보 설정
-      if (sanitizedEvent.category === '학원' && sanitizedEvent.academy_id) {
-        const academy = academyList.find(a => a.id === sanitizedEvent.academy_id);
-        if (academy) {
-          setSelectedAcademy(academy);
-          setAcademyName(academy.name);
-          setSelectedSubject(academy.subject);
-          
-          console.log('Loaded academy data:', academy);
-        } else {
-          console.warn('Academy not found for ID:', sanitizedEvent.academy_id);
-          // 학원을 찾을 수 없는 경우 제목에서 학원명 추출
-          setAcademyName(sanitizedEvent.title);
-        }
-      }
-      
-      console.log('Event data loaded successfully');
-    } catch (error) {
-      console.error('Error loading event data:', error);
-      Alert.alert('오류', '일정 정보를 불러오는 중 오류가 발생했습니다.');
-    }
-  };
-
-  const initializeNewEventForm = () => {
-    // 현재 선택된 날짜의 요일 구하기
-    const currentDayIndex = moment(selectedDate).day();
-    const currentDayKey = weekdays.find(day => day.index === currentDayIndex)?.key;
-    
-    // 새 일정 추가 모드
-    resetForm();
-    
-    // 현재 요일 선택
-    if (currentDayKey) {
-      setSelectedDays(new Set([currentDayKey]));
-    }
-    
-    // 기본 시간 설정
-    if (selectedTime) {
-      setStartTime(selectedTime);
-      const start = moment(selectedTime, 'HH:mm');
-      const interval = schedule?.time_unit === '30min' ? 30 : 60;
-      setEndTime(start.add(interval, 'minutes').format('HH:mm'));
-    }
-  };
-
-  const resetForm = () => {
-    setTitle('');
-    setCategory('선택안함');
-    setAcademyName('');
-    setSelectedSubject('국어');
-    setSelectedAcademy(null);
-    setIsRecurring(false);
-    setMemo('');
-    setSelectedDays(new Set());
-  };
-
-  // 요일 선택/해제
   const toggleDay = (dayKey: string) => {
-    const newSelectedDays = new Set(selectedDays);
+    const newSelectedDays = new Set(formData.selectedDays);
     if (newSelectedDays.has(dayKey)) {
       newSelectedDays.delete(dayKey);
     } else {
       newSelectedDays.add(dayKey);
     }
-    setSelectedDays(newSelectedDays);
-  };
-
-  // 카테고리 변경 시 처리
-  const handleCategoryChange = (newCategory: Event['category']) => {
-    setCategory(newCategory);
-    if (newCategory !== '학원') {
-      setAcademyName('');
-      setSelectedSubject('국어');
-      setSelectedAcademy(null);
-    }
-  };
-
-  // 학원 선택 처리
-  const handleAcademySelect = (academyIdStr: string) => {
-    if (academyIdStr === 'new') {
-      // 새 학원 추가
-      setSelectedAcademy(null);
-      setAcademyName('');
-      setSelectedSubject('국어');
-    } else {
-      const academy = academies.find(a => a.id.toString() === academyIdStr);
-      if (academy) {
-        setSelectedAcademy(academy);
-        setAcademyName(academy.name);
-        setSelectedSubject(academy.subject);
-      }
-    }
-  };
-
-  // 🆕 수정된 저장 로직
-  const handleSave = async () => {
-    // 유효성 검사
-    if (selectedDays.size === 0) {
-      Alert.alert('오류', '최소 하나의 요일을 선택해주세요.');
-      return;
-    }
-
-    if (!startTime || !endTime) {
-      Alert.alert('오류', '시작 시간과 종료 시간을 설정해주세요.');
-      return;
-    }
-
-    if (moment(startTime, 'HH:mm').isSameOrAfter(moment(endTime, 'HH:mm'))) {
-      Alert.alert('오류', '종료 시간은 시작 시간보다 늦어야 합니다.');
-      return;
-    }
-
-    const eventTitle = category === '학원' ? academyName : title;
-    if (!eventTitle.trim()) {
-      Alert.alert('오류', category === '학원' ? '학원명을 입력해주세요.' : '제목을 입력해주세요.');
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      if (isEditMode) {
-        // ✅ event 데이터 타입 안전 확인
-        const sanitizedEvent = event ? sanitizeEventData(event) : null;
-        
-        if (sanitizedEvent?.is_recurring && !isEditingException) {
-          // 반복 일정 편집 - 옵션 선택 모달 표시
-          setShowRecurringEditModal(true);
-          setIsLoading(false);
-          return;
-        } else {
-          // 일반 일정 편집 또는 예외 편집
-          await updateExistingEvent();
-        }
-      } else {
-        // 새 일정 생성 (기존과 동일)
-        if (isRecurring) {
-          await saveRecurringEvent();
-        } else {
-          await saveSingleEvent();
-        }
-      }
-
-      onSave();
-      navigation.goBack();
-    } catch (error) {
-      console.error('Error saving event:', error);
-      Alert.alert('오류', '일정을 저장하는 중 오류가 발생했습니다.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 🆕 반복 일정 편집 처리
-  const handleRecurringEditConfirm = async (editType: 'this_only' | 'all_future') => {
-    setShowRecurringEditModal(false);
-    setIsLoading(true);
-
-    try {
-      if (editType === 'this_only') {
-        await saveAsException();
-      } else {
-        await updateEntireRecurringSeries();
-      }
-
-      onSave();
-      navigation.goBack();
-    } catch (error) {
-      console.error('Error in recurring edit:', error);
-      Alert.alert('오류', '반복 일정 수정 중 오류가 발생했습니다.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 🆕 예외로 저장 - ✅ DatabaseService에 해당 메서드가 없으므로 주석 처리
-  const saveAsException = async () => {
-    console.log('saveAsException - Feature not implemented yet');
-    // TODO: DatabaseService에 예외 처리 메서드들을 추가해야 함
-    
-    /*
-    if (!event?.id || !selectedDate) return;
-
-    const eventTitle = category === '학원' ? academyName : title;
-    let academyId: number | undefined = selectedAcademy?.id;
-    
-    // 학원 카테고리인 경우 학원 생성/조회
-    if (category === '학원' && academyName.trim()) {
-      academyId = await DatabaseService.createAcademyForRecurringEvent(
-        academyName.trim(),
-        selectedSubject,
-        scheduleId
-      );
-    }
-
-    // 기존 예외가 있는지 확인
-    const existingExceptions = await DatabaseService.getRecurringExceptions(
-      event.id, selectedDate, selectedDate
-    );
-
-    if (existingExceptions.length > 0) {
-      // 기존 예외 수정
-      const exception = existingExceptions[0];
-      await DatabaseService.updateRecurringException({
-        ...exception,
-        exception_type: 'modify',
-        modified_title: eventTitle.trim(),
-        modified_start_time: startTime,
-        modified_end_time: endTime,
-        modified_category: category,
-        modified_academy_id: academyId,
-      });
-    } else {
-      // 새 예외 생성
-      await DatabaseService.createRecurringException({
-        recurring_event_id: event.id,
-        exception_date: selectedDate,
-        exception_type: 'modify',
-        modified_title: eventTitle.trim(),
-        modified_start_time: startTime,
-        modified_end_time: endTime,
-        modified_category: category,
-        modified_academy_id: academyId,
-        del_yn: false,
-      });
-    }
-    */
-  };
-
-  // 🆕 전체 반복 시리즈 수정
-  const updateEntireRecurringSeries = async () => {
-    // 기존 updateExistingEvent 로직 실행
-    await updateExistingEvent();
-  };
-
-  const updateExistingEvent = async () => {
-    if (!event?.id) return;
-
-    const eventTitle = category === '학원' ? academyName : title;
-    let academyId: number | undefined = selectedAcademy?.id;
-    let newlyCreatedAcademyId: number | undefined;
-    
-    // 학원 카테고리인 경우 학원 생성/조회
-    if (category === '학원' && academyName.trim()) {
-      academyId = await DatabaseService.createAcademyForRecurringEvent(
-        academyName.trim(),
-        selectedSubject,
-        scheduleId // ✅ 스케줄 ID 전달
-      );
-      
-      // 🔔 새로 생성된 학원인지 확인
-      if (!selectedAcademy || selectedAcademy.name !== academyName.trim()) {
-        newlyCreatedAcademyId = academyId;
-        console.log('🏫 New academy created during event update:', newlyCreatedAcademyId);
-      }
-    }
-
-    const updatedEvent: Event = {
-      ...event,
-      title: eventTitle.trim(),
-      start_time: startTime,
-      end_time: endTime,
-      category,
-      academy_id: academyId,
-      event_date: selectedDate, // 편집 시에는 현재 선택된 날짜 유지
-    };
-
-    await DatabaseService.updateEvent(updatedEvent);
-    console.log('Event updated successfully');
-
-    // 🔔 새로 생성된 학원에 대해서는 알림 설정하지 않음 (결제일 없음)
-    if (newlyCreatedAcademyId) {
-      console.log('💡 New academy created, but no payment notification set (no payment day)');
-    }
-  };
-
-  const saveSingleEvent = async () => {
-    const eventTitle = category === '학원' ? academyName : title;
-    const selectedDaysArray = Array.from(selectedDays);
-    
-    let academyId: number | undefined;
-    
-    // 학원 카테고리인 경우 학원 생성/조회
-    if (category === '학원' && academyName.trim()) {
-      academyId = await DatabaseService.createAcademyForRecurringEvent(
-        academyName.trim(),
-        selectedSubject,
-        scheduleId // ✅ 스케줄 ID 전달
-      );
-      
-      // 🔔 새로 생성된 학원은 결제일이 없으므로 알림 설정하지 않음
-      console.log('💡 Academy created from event, but no payment notification set (no payment day)');
-    }
-    
-    const eventData = {
-      schedule_id: scheduleId,
-      title: eventTitle.trim(),
-      start_time: startTime,
-      end_time: endTime,
-      category,
-      academy_id: academyId,
-      is_recurring: false,
-    };
-
-    if (selectedDaysArray.length === 1) {
-      // 단일 요일 - 기존 방식
-      await DatabaseService.createEvent({
-        ...eventData,
-        event_date: selectedDate,
-      });
-    } else {
-      // 다중 요일 - 각 요일별로 이벤트 생성
-      await DatabaseService.createMultiDayEvents(
-        eventData,
-        selectedDaysArray,
-        selectedDate
-      );
-    }
-  };
-
-  const saveRecurringEvent = async () => {
-    console.log('Saving recurring event...');
-    console.log('Selected days:', Array.from(selectedDays));
-    console.log('Category:', category);
-    console.log('Academy name:', academyName);
-    console.log('Title:', title);
-    
-    // 반복 패턴 생성
-    const patternData = {
-      monday: selectedDays.has('monday'),
-      tuesday: selectedDays.has('tuesday'),
-      wednesday: selectedDays.has('wednesday'),
-      thursday: selectedDays.has('thursday'),
-      friday: selectedDays.has('friday'),
-      saturday: selectedDays.has('saturday'),
-      sunday: selectedDays.has('sunday'),
-      start_date: selectedDate,
-      end_date: undefined, // 무한 반복
-    };
-
-    console.log('Pattern data:', patternData);
-
-    const recurringPatternId = await DatabaseService.createRecurringPattern(patternData);
-    console.log('Created pattern with ID:', recurringPatternId);
-    
-    const eventTitle = category === '학원' ? academyName : title;
-    let academyId: number | undefined;
-    
-    // 학원 카테고리인 경우 학원 생성/조회
-    if (category === '학원' && academyName.trim()) {
-      console.log('Creating academy for recurring event...');
-      academyId = await DatabaseService.createAcademyForRecurringEvent(
-        academyName.trim(),
-        selectedSubject,
-        scheduleId // ✅ 스케줄 ID 전달
-      );
-      console.log('Academy ID:', academyId);
-      
-      // 🔔 새로 생성된 학원은 결제일이 없으므로 알림 설정하지 않음
-      console.log('💡 Academy created from recurring event, but no payment notification set (no payment day)');
-    }
-    
-    const eventData: Omit<Event, 'id' | 'created_at' | 'updated_at'> = {
-      schedule_id: scheduleId,
-      title: eventTitle.trim(),
-      start_time: startTime,
-      end_time: endTime,
-      event_date: undefined, // 반복 일정은 event_date가 null
-      category,
-      academy_id: academyId,
-      is_recurring: true,
-      recurring_group_id: recurringPatternId,
-    };
-
-    console.log('Event data:', eventData);
-    
-    const eventId = await DatabaseService.createEvent(eventData);
-    console.log('Created recurring event with ID:', eventId);
-  };
-
-  // 🆕 수정된 삭제 로직
-  const handleDelete = async () => {
-    if (!event?.id) return;
-
-    // ✅ event 데이터 타입 안전 확인
-    const sanitizedEvent = sanitizeEventData(event);
-
-    if (sanitizedEvent.is_recurring) {
-      setShowRecurringDeleteModal(true);
-    } else {
-      // 일반 일정 삭제 (기존과 동일)
-      Alert.alert(
-        '일정 삭제',
-        '이 일정을 삭제하시겠습니까?',
-        [
-          { text: '취소', style: 'cancel' },
-          {
-            text: '삭제',
-            style: 'destructive',
-            onPress: async () => {
-              await deleteSingleEvent();
-            },
-          },
-        ]
-      );
-    }
-  };
-
-  // 🆕 반복 일정 삭제 처리 - ✅ DatabaseService 메서드 주석 처리
-  const handleRecurringDeleteConfirm = async (deleteType: 'this_only' | 'all_future' | 'restore') => {
-    setShowRecurringDeleteModal(false);
-    setIsLoading(true);
-
-    try {
-      if (deleteType === 'this_only') {
-        console.log('this_only delete - Feature not implemented yet');
-        // TODO: DatabaseService에 예외 처리 메서드들을 추가해야 함
-        /*
-        // 이번만 삭제 - 취소 예외 생성
-        await DatabaseService.createRecurringException({
-          recurring_event_id: event!.id!,
-          exception_date: selectedDate!,
-          exception_type: 'cancel',
-          del_yn: false,
-        });
-        */
-      } else if (deleteType === 'all_future') {
-        // 전체 삭제
-        await DatabaseService.deleteRecurringEvent(event!.id!);
-      } else if (deleteType === 'restore') {
-        console.log('restore delete - Feature not implemented yet');
-        // TODO: DatabaseService에 예외 처리 메서드들을 추가해야 함
-        /*
-        // 예외 되돌리기
-        const exceptionId = (event as any).exception_id;
-        if (exceptionId) {
-          await DatabaseService.deleteRecurringException(exceptionId);
-        }
-        */
-      }
-
-      onSave();
-      navigation.goBack();
-    } catch (error) {
-      console.error('Error in recurring delete:', error);
-      Alert.alert('오류', '반복 일정 삭제 중 오류가 발생했습니다.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 🆕 단일 일정 삭제
-  const deleteSingleEvent = async () => {
-    setIsLoading(true);
-    try {
-      // 🔔 학원 일정 삭제 시 알림도 함께 처리
-      if (event!.category === '학원' && event!.academy_id) {
-        try {
-          // 해당 학원의 다른 일정이 있는지 확인
-          const relatedEvents = await DatabaseService.getEvents(
-            scheduleId, 
-            moment().subtract(1, 'year').format('YYYY-MM-DD'),
-            moment().add(1, 'year').format('YYYY-MM-DD')
-          );
-          
-          const academyEvents = relatedEvents.filter(e => 
-            e.academy_id === event!.academy_id && e.id !== event!.id
-          );
-          
-          // 해당 학원의 마지막 일정이라면 알림도 삭제
-          if (academyEvents.length === 0) {
-            await handleAcademyDeleted(event!.academy_id);
-            console.log('✅ Academy notifications deleted for:', event!.academy_id);
-          }
-        } catch (notificationError) {
-          console.error('❌ Error handling academy notifications:', notificationError);
-          // 알림 처리 실패해도 일정 삭제는 계속 진행
-        }
-      }
-
-      await DatabaseService.deleteEvent(event!.id!);
-      onSave();
-      navigation.goBack();
-    } catch (error) {
-      console.error('Error deleting event:', error);
-      Alert.alert('오류', '일정을 삭제하는 중 오류가 발생했습니다.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleCancel = () => {
-    navigation.goBack();
+    updateFormData({ selectedDays: newSelectedDays });
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* 헤더 */}
+      {/* 🎯 헤더 - 깔끔해진 구조 */}
       <View style={styles.header}>
         <TouchableOpacity onPress={handleCancel} style={styles.headerButton}>
           <Ionicons name="close" size={24} color="#333" />
         </TouchableOpacity>
         
         <Text style={styles.headerTitle}>
-          {isEditMode ? (isEditingException ? '예외 수정' : '수정') : '추가'}
+          {isEditMode ? (uiState.isEditingException ? '예외 수정' : '수정') : '추가'}
         </Text>
         
         <View style={styles.headerRight}>
-          {event && (
+          {isEditMode && (
             <TouchableOpacity 
               onPress={handleDelete} 
               style={styles.headerButton}
-              disabled={isLoading}
+              disabled={uiState.isLoading}
             >
               <Ionicons name="trash-outline" size={20} color="#FF3B30" />
             </TouchableOpacity>
           )}
-          <TouchableOpacity onPress={handleSave} disabled={isLoading}>
+          <TouchableOpacity onPress={handleSave} disabled={uiState.isLoading}>
             <Ionicons name="chevron-down" size={24} color="#333" />
           </TouchableOpacity>
         </View>
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* 🆕 예외 편집 알림 */}
-        {isEditingException && (
+        {/* 🎯 예외 편집 알림 */}
+        {uiState.isEditingException && (
           <View style={styles.exceptionInfo}>
             <Ionicons name="information-circle-outline" size={16} color="#FF9500" />
             <Text style={styles.exceptionInfoText}>
@@ -762,8 +107,8 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 🔔 알림 관련 정보 표시 (학원 카테고리일 때만) */}
-        {category === '학원' && (
+        {/* 🎯 알림 관련 정보 표시 */}
+        {formData.category === '학원' && (
           <View style={styles.notificationInfo}>
             <Ionicons name="notifications-outline" size={16} color="#FF9500" />
             <Text style={styles.notificationInfoText}>
@@ -772,22 +117,22 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 요일 선택 */}
+        {/* 🎯 요일 선택 - 상태만 props로 전달 */}
         <View style={styles.section}>
           <View style={styles.dayButtons}>
-            {availableDays.map((day) => (
+            {options.availableDays.map((day) => (
               <TouchableOpacity
                 key={day.key}
                 style={[
                   styles.dayButton,
-                  selectedDays.has(day.key) && styles.dayButtonSelected
+                  formData.selectedDays.has(day.key) && styles.dayButtonSelected
                 ]}
                 onPress={() => toggleDay(day.key)}
-                disabled={isEditMode && event?.is_recurring && !isEditingException}
+                disabled={isEditMode && formData.isRecurring && !uiState.isEditingException}
               >
                 <Text style={[
                   styles.dayButtonText,
-                  selectedDays.has(day.key) && styles.dayButtonTextSelected
+                  formData.selectedDays.has(day.key) && styles.dayButtonTextSelected
                 ]}>
                   {day.label}
                 </Text>
@@ -796,48 +141,53 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         </View>
 
-        {/* 시간 설정 */}
+        {/* 🎯 시간 설정 */}
         <View style={styles.section}>
           <View style={styles.timeContainer}>
             <Text style={styles.timeLabel}>시간</Text>
             <View style={styles.timeButtons}>
+              {/* 시작 시간 버튼 */}
               <TouchableOpacity
                 style={styles.timeButton}
-                onPress={() => setShowStartTimePicker(true)}
+                onPress={() => updateUIState({ showStartTimePicker: true })}
               >
                 <Text style={styles.timeButtonText}>
-                  {startTime ? moment(startTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
+                  {formData.startTime ? moment(formData.startTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
                 </Text>
               </TouchableOpacity>
+
+              {/* 구분자 */}
               <Text style={styles.timeSeparator}>~</Text>
+
+              {/* 종료 시간 버튼 */}
               <TouchableOpacity
                 style={styles.timeButton}
-                onPress={() => setShowEndTimePicker(true)}
+                onPress={() => updateUIState({ showEndTimePicker: true })}
               >
                 <Text style={styles.timeButtonText}>
-                  {endTime ? moment(endTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
+                  {formData.endTime ? moment(formData.endTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
                 </Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
 
-        {/* 분류 */}
+        {/* 🎯 분류 선택 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>분류</Text>
           <View style={styles.categoryContainer}>
-            {categoryOptions.map((cat) => (
+            {options.categoryOptions.map((cat) => (
               <TouchableOpacity
                 key={cat}
                 style={[
                   styles.categoryButton,
-                  category === cat && styles.categoryButtonSelected
+                  formData.category === cat && styles.categoryButtonSelected
                 ]}
-                onPress={() => handleCategoryChange(cat as Event['category'])}
+                onPress={() => handleCategoryChange(cat)}
               >
                 <Text style={[
                   styles.categoryButtonText,
-                  category === cat && styles.categoryButtonTextSelected
+                  formData.category === cat && styles.categoryButtonTextSelected
                 ]}>
                   {cat}
                 </Text>
@@ -846,20 +196,20 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         </View>
 
-        {/* 학원 선택 시 추가 필드 */}
-        {category === '학원' && (
+        {/* 🎯 학원 선택 시 추가 필드 */}
+        {formData.category === '학원' && (
           <>
-            {/* 기존 학원 선택 또는 새 학원 추가 */}
-            {academies.length > 0 && (
+            {/* 기존 학원 선택 */}
+            {options.academyOptions.length > 0 && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>학원 선택</Text>
                 <TouchableOpacity
                   style={styles.pickerButton}
-                  onPress={() => setShowAcademyPicker(true)}
+                  onPress={() => updateUIState({ showAcademyPicker: true })}
                 >
                   <Text style={styles.pickerButtonText}>
-                    {selectedAcademy 
-                      ? `${selectedAcademy.name} (${selectedAcademy.subject})`
+                    {formData.selectedAcademy 
+                      ? `${formData.selectedAcademy.name} (${formData.selectedAcademy.subject})`
                       : '학원 선택 또는 새로 추가'
                     }
                   </Text>
@@ -868,37 +218,37 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
               </View>
             )}
 
-            {/* 제목 (학원명) */}
+            {/* 학원명 입력 */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>학원명</Text>
               <View style={styles.inputContainer}>
                 <Ionicons name="school-outline" size={20} color="#666" style={styles.inputIcon} />
                 <TextInput
                   style={styles.textInput}
-                  value={academyName}
-                  onChangeText={setAcademyName}
+                  value={formData.academyName}
+                  onChangeText={(text) => updateFormData({ academyName: text })}
                   placeholder="학원명 입력"
                   placeholderTextColor="#999"
                 />
               </View>
             </View>
 
-            {/* 과목 */}
+            {/* 과목 선택 */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>과목</Text>
               <View style={styles.subjectContainer}>
-                {subjectOptions.map((subject) => (
+                {options.subjectOptions.map((subject) => (
                   <TouchableOpacity
                     key={subject}
                     style={[
                       styles.subjectButton,
-                      selectedSubject === subject && styles.subjectButtonSelected
+                      formData.selectedSubject === subject && styles.subjectButtonSelected
                     ]}
-                    onPress={() => setSelectedSubject(subject)}
+                    onPress={() => updateFormData({ selectedSubject: subject })}
                   >
                     <Text style={[
                       styles.subjectButtonText,
-                      selectedSubject === subject && styles.subjectButtonTextSelected
+                      formData.selectedSubject === subject && styles.subjectButtonTextSelected
                     ]}>
                       {subject}
                     </Text>
@@ -909,16 +259,16 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </>
         )}
 
-        {/* 일반 제목 (학원이 아닌 경우) */}
-        {category !== '학원' && (
+        {/* 🎯 일반 제목 (학원이 아닌 경우) */}
+        {formData.category !== '학원' && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>제목</Text>
             <View style={styles.inputContainer}>
               <Ionicons name="create-outline" size={20} color="#666" style={styles.inputIcon} />
               <TextInput
                 style={styles.textInput}
-                value={title}
-                onChangeText={setTitle}
+                value={formData.title}
+                onChangeText={(text) => updateFormData({ title: text })}
                 placeholder="제목 입력"
                 placeholderTextColor="#999"
               />
@@ -926,23 +276,23 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 반복 설정 (편집 모드가 아니거나 기존에 반복 일정이 아닌 경우에만 표시) */}
-        {(!isEditMode || !event?.is_recurring) && (
+        {/* 🎯 반복 설정 */}
+        {(!isEditMode || !formData.isRecurring) && (
           <View style={styles.section}>
             <View style={styles.toggleContainer}>
               <Text style={styles.toggleLabel}>선택한 요일 매주 반복</Text>
               <Switch
-                value={isRecurring}
-                onValueChange={setIsRecurring}
+                value={formData.isRecurring}
+                onValueChange={(value) => updateFormData({ isRecurring: value })}
                 trackColor={{ false: '#E5E5EA', true: '#34C759' }}
-                thumbColor={isRecurring ? '#fff' : '#fff'}
+                thumbColor={formData.isRecurring ? '#fff' : '#fff'}
               />
             </View>
           </View>
         )}
 
-        {/* 🆕 반복 일정 정보 표시 */}
-        {isEditMode && event?.is_recurring && !isEditingException && (
+        {/* 🎯 반복 일정 정보 표시 */}
+        {isEditMode && formData.isRecurring && !uiState.isEditingException && (
           <View style={styles.section}>
             <View style={styles.recurringInfo}>
               <Ionicons name="refresh-outline" size={20} color="#007AFF" />
@@ -953,13 +303,13 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 메모 */}
+        {/* 🎯 메모 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>메모</Text>
           <TextInput
             style={styles.memoInput}
-            value={memo}
-            onChangeText={setMemo}
+            value={formData.memo}
+            onChangeText={(text) => updateFormData({ memo: text })}
             placeholder="메모 입력"
             placeholderTextColor="#999"
             multiline
@@ -968,12 +318,12 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
       </ScrollView>
 
-      {/* 🆕 반복 일정 편집 옵션 모달 */}
+      {/* 🎯 반복 일정 편집 옵션 모달 */}
       <Modal
-        visible={showRecurringEditModal}
+        visible={uiState.showRecurringEditModal}
         transparent={true}
         animationType="slide"
-        onRequestClose={() => setShowRecurringEditModal(false)}
+        onRequestClose={() => updateUIState({ showRecurringEditModal: false })}
       >
         <View style={styles.recurringModalOverlay}>
           <View style={styles.recurringModalContainer}>
@@ -989,7 +339,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
               <View style={styles.recurringOptionContent}>
                 <Text style={styles.recurringOptionTitle}>이번만 수정</Text>
                 <Text style={styles.recurringOptionDescription}>
-                  {moment(selectedDate).format('M월 D일')} 일정만 수정합니다
+                  {moment(route.params.selectedDate).format('M월 D일')} 일정만 수정합니다
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={20} color="#666" />
@@ -1010,7 +360,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
             
             <TouchableOpacity
               style={styles.recurringCancelButton}
-              onPress={() => setShowRecurringEditModal(false)}
+              onPress={() => updateUIState({ showRecurringEditModal: false })}
             >
               <Text style={styles.recurringCancelText}>취소</Text>
             </TouchableOpacity>
@@ -1018,26 +368,26 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
       </Modal>
 
-      {/* 🆕 반복 일정 삭제 옵션 모달 */}
+      {/* 🎯 반복 일정 삭제 옵션 모달 */}
       <Modal
-        visible={showRecurringDeleteModal}
+        visible={uiState.showRecurringDeleteModal}
         transparent={true}
         animationType="slide"
-        onRequestClose={() => setShowRecurringDeleteModal(false)}
+        onRequestClose={() => updateUIState({ showRecurringDeleteModal: false })}
       >
         <View style={styles.recurringModalOverlay}>
           <View style={styles.recurringModalContainer}>
             <Text style={styles.recurringModalTitle}>
-              {isEditingException ? '예외 삭제' : '반복 일정 삭제'}
+              {uiState.isEditingException ? '예외 삭제' : '반복 일정 삭제'}
             </Text>
             <Text style={styles.recurringModalDescription}>
-              {isEditingException 
+              {uiState.isEditingException 
                 ? '이 날짜의 수정사항을 제거하고 원래 반복 일정으로 되돌리시겠습니까?'
                 : '이 반복 일정을 어떻게 삭제하시겠습니까?'
               }
             </Text>
             
-            {isEditingException ? (
+            {uiState.isEditingException ? (
               <TouchableOpacity
                 style={styles.recurringOptionButton}
                 onPress={() => handleRecurringDeleteConfirm('restore')}
@@ -1045,7 +395,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
                 <View style={styles.recurringOptionContent}>
                   <Text style={styles.recurringOptionTitle}>원래대로 되돌리기</Text>
                   <Text style={styles.recurringOptionDescription}>
-                    {moment(selectedDate).format('M월 D일')} 수정사항을 제거하고 원래 반복 일정으로 복원합니다
+                    {moment(route.params.selectedDate).format('M월 D일')} 수정사항을 제거하고 원래 반복 일정으로 복원합니다
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={20} color="#666" />
@@ -1059,7 +409,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
                   <View style={styles.recurringOptionContent}>
                     <Text style={styles.recurringOptionTitle}>이번만 삭제</Text>
                     <Text style={styles.recurringOptionDescription}>
-                      {moment(selectedDate).format('M월 D일')} 일정만 삭제합니다
+                      {moment(route.params.selectedDate).format('M월 D일')} 일정만 삭제합니다
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={20} color="#666" />
@@ -1082,7 +432,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
             
             <TouchableOpacity
               style={styles.recurringCancelButton}
-              onPress={() => setShowRecurringDeleteModal(false)}
+              onPress={() => updateUIState({ showRecurringDeleteModal: false })}
             >
               <Text style={styles.recurringCancelText}>취소</Text>
             </TouchableOpacity>
@@ -1090,56 +440,46 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
       </Modal>
 
-      {/* CustomPicker들 */}
+      {/* 🎯 CustomPicker들 - 훅의 핸들러 사용 */}
       <CustomPicker
-        visible={showStartTimePicker}
+        visible={uiState.showStartTimePicker}
         title="시작 시간"
-        selectedValue={startTime}
-        options={timeOptions}
-        onCancel={() => setShowStartTimePicker(false)}
+        selectedValue={formData.startTime}
+        options={options.timeOptions}
+        onCancel={() => updateUIState({ showStartTimePicker: false })}
         onConfirm={(value) => {
-          setStartTime(value);
-          setShowStartTimePicker(false);
-          
-          // 종료 시간 자동 조정
-          const start = moment(value, 'HH:mm');
-          const interval = schedule?.time_unit === '30min' ? 30 : 60;
-          const newEndTime = start.add(interval, 'minutes').format('HH:mm');
-          if (timeOptions.includes(newEndTime)) {
-            setEndTime(newEndTime);
-          }
+          handleStartTimeConfirm(value);
+          updateUIState({ showStartTimePicker: false });
         }}
       />
 
       <CustomPicker
-        visible={showEndTimePicker}
+        visible={uiState.showEndTimePicker}
         title="종료 시간"
-        selectedValue={endTime}
-        options={timeOptions}
-        onCancel={() => setShowEndTimePicker(false)}
+        selectedValue={formData.endTime}
+        options={options.timeOptions}
+        onCancel={() => updateUIState({ showEndTimePicker: false })}
         onConfirm={(value) => {
-          setEndTime(value);
-          setShowEndTimePicker(false);
+          handleEndTimeConfirm(value);
+          updateUIState({ showEndTimePicker: false });
         }}
       />
 
       {/* 학원 선택 Picker */}
       <CustomPicker
-        visible={showAcademyPicker}
+        visible={uiState.showAcademyPicker}
         title="학원 선택"
-        selectedValue={selectedAcademy?.id.toString() || 'new'}
-        options={[...academyOptions.map(opt => opt.value), 'new']}
-        optionLabels={[...academyOptions.map(opt => opt.label), '새 학원 추가']}
-        onCancel={() => setShowAcademyPicker(false)}
-        onConfirm={(value) => {
-          handleAcademySelect(value);
-          setShowAcademyPicker(false);
-        }}
+        selectedValue={formData.selectedAcademy?.id.toString() || 'new'}
+        options={[...options.academyOptions.map(opt => opt.value), 'new']}
+        optionLabels={[...options.academyOptions.map(opt => opt.label), '새 학원 추가']}
+        onCancel={() => updateUIState({ showAcademyPicker: false })}
+        onConfirm={handleAcademySelect} // ✅ 훅의 핸들러 사용
       />
     </SafeAreaView>
   );
 };
 
+// 🎯 스타일은 그대로 유지 (변경사항 없음)
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -1172,7 +512,6 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 20,
   },
-  // 🆕 예외 편집 정보 스타일
   exceptionInfo: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1191,7 +530,6 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: '500',
   },
-  // 🔔 알림 정보 스타일 추가
   notificationInfo: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1216,7 +554,6 @@ const styles = StyleSheet.create({
     color: '#333',
     marginBottom: 12,
   },
-  // 요일 버튼
   dayButtons: {
     flexDirection: 'row',
     gap: 8,
@@ -1241,7 +578,6 @@ const styles = StyleSheet.create({
   dayButtonTextSelected: {
     color: '#fff',
   },
-  // 시간 설정
   timeContainer: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -1279,7 +615,6 @@ const styles = StyleSheet.create({
     color: '#666',
     marginHorizontal: 8,
   },
-  // 카테고리
   categoryContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1302,7 +637,6 @@ const styles = StyleSheet.create({
   categoryButtonTextSelected: {
     color: '#fff',
   },
-  // 과목
   subjectContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1325,7 +659,6 @@ const styles = StyleSheet.create({
   subjectButtonTextSelected: {
     color: '#fff',
   },
-  // Picker 버튼
   pickerButton: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1342,7 +675,6 @@ const styles = StyleSheet.create({
     color: '#333',
     flex: 1,
   },
-  // 입력 필드
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1372,7 +704,6 @@ const styles = StyleSheet.create({
     color: '#333',
     textAlignVertical: 'top',
   },
-  // 토글
   toggleContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1389,7 +720,6 @@ const styles = StyleSheet.create({
     color: '#333',
     fontWeight: '500',
   },
-  // 🆕 반복 일정 정보 컨테이너
   recurringInfo: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1406,7 +736,6 @@ const styles = StyleSheet.create({
     flex: 1,
     fontWeight: '500',
   },
-  // 🆕 반복 편집 모달 스타일
   recurringModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
