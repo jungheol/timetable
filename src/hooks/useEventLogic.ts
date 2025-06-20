@@ -1,3 +1,4 @@
+// 📁 hooks/useEventLogic.ts
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import moment from 'moment';
 import { Alert } from 'react-native';
@@ -79,10 +80,39 @@ const createInitialUIState = (): EventUIState => ({
   isEditingException: false,
 });
 
+// ✅ 시간 계산 헬퍼 함수 추가
+const calculateEndTime = (startTime: string, schedule: Schedule | null): string => {
+  if (!schedule || !startTime) return '';
+  
+  console.log('⏰ Calculating end time for:', startTime);
+  console.log('📋 Schedule time unit:', schedule.time_unit);
+  
+  const start = moment(startTime, 'HH:mm');
+  const interval = schedule.time_unit === '30min' ? 30 : 60;
+  
+  // ✅ clone()을 사용해서 원본 시간을 보존
+  const endTime = start.clone().add(interval, 'minutes').format('HH:mm');
+  
+  console.log(`⏰ Time calculation: ${startTime} + ${interval}min = ${endTime}`);
+  
+  return endTime;
+};
+
+// ✅ 유효한 시간 옵션인지 확인하는 헬퍼 함수
+const isValidTimeOption = (time: string, timeOptions: string[]): boolean => {
+  return timeOptions.includes(time);
+};
+
+// ✅ 다음 유효한 시간 찾기 헬퍼 함수
+const findNextValidTime = (currentTime: string, timeOptions: string[]): string | null => {
+  return timeOptions.find(time => 
+    moment(time, 'HH:mm').isAfter(moment(currentTime, 'HH:mm'))
+  ) || null;
+};
+
 // 메인 훅
 export const useEventLogic = (
   params: EventScreenParams,
-  // ✅ navigation을 파라미터로 받아옴
   navigation: any
 ) => {
   const { event, selectedDate, selectedTime, scheduleId, onSave } = params;
@@ -103,19 +133,20 @@ export const useEventLogic = (
   // 편집 모드 체크
   const isEditMode = !!event;
 
+  // weekdays를 상수로 분리
+  const weekdays: DayButton[] = useMemo(() => [
+    { key: 'monday', label: '월', index: 1 },
+    { key: 'tuesday', label: '화', index: 2 },
+    { key: 'wednesday', label: '수', index: 3 },
+    { key: 'thursday', label: '목', index: 4 },
+    { key: 'friday', label: '금', index: 5 },
+    { key: 'saturday', label: '토', index: 6 },
+    { key: 'sunday', label: '일', index: 0 },
+  ], []);
+
   // 옵션 생성
   const options = useMemo<EventOptions>(() => {
-    const weekdays: DayButton[] = [
-      { key: 'monday', label: '월', index: 1 },
-      { key: 'tuesday', label: '화', index: 2 },
-      { key: 'wednesday', label: '수', index: 3 },
-      { key: 'thursday', label: '목', index: 4 },
-      { key: 'friday', label: '금', index: 5 },
-      { key: 'saturday', label: '토', index: 6 },
-      { key: 'sunday', label: '일', index: 0 },
-    ];
-
-    // ✅ Boolean 타입 안전 확인
+    // Boolean 타입 안전 확인
     const availableDays = Boolean(schedule?.show_weekend)
       ? weekdays 
       : weekdays.slice(0, 5);
@@ -146,7 +177,7 @@ export const useEventLogic = (
       subjectOptions: ['국어', '수학', '영어', '예체능', '사회과학', '기타'],
       academyOptions,
     };
-  }, [schedule, academies]);
+  }, [schedule, academies, weekdays]);
 
   // 데이터 타입 변환 헬퍼
   const sanitizeEventData = useCallback((eventData: any): Event => ({
@@ -169,7 +200,8 @@ export const useEventLogic = (
       if (event) {
         await loadEventData(event, academyList);
       } else {
-        initializeNewEventForm();
+        // ✅ 스케줄이 로드된 후에 새 이벤트 폼 초기화
+        initializeNewEventForm(activeSchedule);
       }
     } catch (error) {
       console.error('Error loading initial data:', error);
@@ -256,28 +288,52 @@ export const useEventLogic = (
     }
   }, []);
 
-  // 새 이벤트 폼 초기화
-  const initializeNewEventForm = useCallback(() => {
+  // ✅ 새 이벤트 폼 초기화 - 개선된 버전
+  const initializeNewEventForm = useCallback((currentSchedule?: Schedule | null) => {
+    const scheduleToUse = currentSchedule || schedule;
+    
     const currentDayIndex = moment(selectedDate).day();
-    const currentDayKey = options.weekdays.find(day => day.index === currentDayIndex)?.key;
+    const currentDayKey = weekdays.find(day => day.index === currentDayIndex)?.key;
+    
+    console.log('🆕 Initializing new event form');
+    console.log('📅 Selected date:', selectedDate);
+    console.log('⏰ Selected time:', selectedTime);
+    console.log('📋 Schedule:', scheduleToUse);
+    
+    // 기본 폼 데이터 설정
+    const formUpdates: Partial<EventFormData> = {
+      selectedDays: currentDayKey ? new Set([currentDayKey]) : new Set(),
+    };
+    
+    // ✅ 시간 설정 로직 개선
+    if (selectedTime && scheduleToUse) {
+      console.log(`⏰ Using selected time: ${selectedTime}`);
+      
+      const calculatedEndTime = calculateEndTime(selectedTime, scheduleToUse);
+      
+      formUpdates.startTime = selectedTime;
+      formUpdates.endTime = calculatedEndTime;
+      
+      console.log(`✅ Time set: ${selectedTime} - ${calculatedEndTime}`);
+      
+    } else if (scheduleToUse) {
+      // selectedTime이 없는 경우 스케줄의 시작 시간을 기본값으로 사용
+      const defaultStart = scheduleToUse.start_time;
+      const calculatedEndTime = calculateEndTime(defaultStart, scheduleToUse);
+      
+      console.log(`⏰ Using default times: ${defaultStart} - ${calculatedEndTime}`);
+      
+      formUpdates.startTime = defaultStart;
+      formUpdates.endTime = calculatedEndTime;
+    }
     
     setFormData(prev => ({
       ...prev,
-      selectedDays: currentDayKey ? new Set([currentDayKey]) : new Set(),
+      ...formUpdates,
     }));
     
-    if (selectedTime && schedule) {
-      const start = moment(selectedTime, 'HH:mm');
-      const interval = schedule.time_unit === '30min' ? 30 : 60;
-      const endTime = start.add(interval, 'minutes').format('HH:mm');
-      
-      setFormData(prev => ({
-        ...prev,
-        startTime: selectedTime,
-        endTime: endTime,
-      }));
-    }
-  }, [selectedDate, selectedTime, schedule, options.weekdays]);
+    console.log('✅ Form initialized with:', formUpdates);
+  }, [selectedDate, selectedTime, schedule, weekdays]);
 
   // 폼 데이터 업데이트
   const updateFormData = useCallback((updates: Partial<EventFormData>) => {
@@ -315,14 +371,14 @@ export const useEventLogic = (
     return true;
   }, [formData]);
 
-  // ✅ 저장 완료 후 화면 닫기 헬퍼
+  // 저장 완료 후 화면 닫기 헬퍼
   const finishSave = useCallback(() => {
     console.log('✅ Save completed, calling onSave and navigating back');
     onSave();
     navigation.goBack();
   }, [onSave, navigation]);
 
-  // ✅ 저장 처리 - 수정된 버전
+  // 저장 처리
   const handleSave = useCallback(async () => {
     console.log('🔄 handleSave called');
     
@@ -342,7 +398,7 @@ export const useEventLogic = (
           setUIState(prev => ({ 
             ...prev, 
             showRecurringEditModal: true, 
-            isLoading: false // ✅ 모달 표시 시 로딩 해제
+            isLoading: false
           }));
           return;
         } else {
@@ -360,7 +416,7 @@ export const useEventLogic = (
       }
 
       console.log('✅ Save operation completed');
-      finishSave(); // ✅ 저장 완료 후 화면 닫기
+      finishSave();
       
     } catch (error) {
       console.error('❌ Error saving event:', error);
@@ -370,7 +426,7 @@ export const useEventLogic = (
     }
   }, [validateForm, isEditMode, event, uiState.isEditingException, formData, finishSave, sanitizeEventData]);
 
-  // ✅ 반복 일정 편집 확인 처리
+  // 반복 일정 편집 확인 처리
   const handleRecurringEditConfirm = useCallback(async (editType: 'this_only' | 'all_future') => {
     console.log('🔄 Recurring edit confirm:', editType);
     
@@ -390,7 +446,7 @@ export const useEventLogic = (
       }
 
       console.log('✅ Recurring edit completed');
-      finishSave(); // ✅ 저장 완료 후 화면 닫기
+      finishSave();
       
     } catch (error) {
       console.error('❌ Error in recurring edit:', error);
@@ -400,7 +456,7 @@ export const useEventLogic = (
     }
   }, [finishSave]);
 
-  // ✅ 반복 일정 삭제 확인 처리
+  // 반복 일정 삭제 확인 처리
   const handleRecurringDeleteConfirm = useCallback(async (deleteType: 'this_only' | 'all_future' | 'restore') => {
     console.log('🔄 Recurring delete confirm:', deleteType);
     
@@ -413,17 +469,15 @@ export const useEventLogic = (
     try {
       if (deleteType === 'this_only') {
         console.log('this_only delete - Feature not implemented yet');
-        // TODO: DatabaseService에 예외 처리 메서드들을 추가해야 함
       } else if (deleteType === 'all_future') {
         console.log('🔄 Deleting entire recurring event');
         await DatabaseService.deleteRecurringEvent(event!.id!);
       } else if (deleteType === 'restore') {
         console.log('restore delete - Feature not implemented yet');
-        // TODO: DatabaseService에 예외 처리 메서드들을 추가해야 함
       }
 
       console.log('✅ Recurring delete completed');
-      finishSave(); // ✅ 삭제 완료 후 화면 닫기
+      finishSave();
       
     } catch (error) {
       console.error('❌ Error in recurring delete:', error);
@@ -433,14 +487,13 @@ export const useEventLogic = (
     }
   }, [event, finishSave]);
 
-  // 🆕 예외로 저장 - TODO: DatabaseService 메서드 구현 필요
+  // 예외로 저장
   const saveAsException = useCallback(async () => {
     console.log('saveAsException - Feature not implemented yet');
-    // 현재는 전체 시리즈 업데이트로 대체
     await updateEntireRecurringSeries();
   }, []);
 
-  // 🆕 전체 반복 시리즈 수정
+  // 전체 반복 시리즈 수정
   const updateEntireRecurringSeries = useCallback(async () => {
     await updateExistingEvent();
   }, []);
@@ -565,7 +618,7 @@ export const useEventLogic = (
     console.log('✅ Recurring event saved successfully');
   }, [formData, selectedDate, scheduleId]);
 
-  // ✅ 삭제 처리 - 수정된 버전
+  // 삭제 처리
   const handleDelete = useCallback(async () => {
     if (!event?.id) return;
 
@@ -601,7 +654,7 @@ export const useEventLogic = (
     setUIState(prev => ({ ...prev, isLoading: true }));
     
     try {
-      // 🔔 학원 일정 삭제 시 알림 처리
+      // 학원 일정 삭제 시 알림 처리
       if (event.category === '학원' && event.academy_id) {
         try {
           const relatedEvents = await DatabaseService.getEvents(
@@ -625,7 +678,7 @@ export const useEventLogic = (
       await DatabaseService.deleteEvent(event.id);
       console.log('✅ Single event deleted successfully');
       
-      finishSave(); // ✅ 삭제 완료 후 화면 닫기
+      finishSave();
       
     } catch (error) {
       console.error('❌ Error deleting event:', error);
@@ -635,7 +688,7 @@ export const useEventLogic = (
     }
   }, [event, scheduleId, handleAcademyDeleted, finishSave]);
 
-  // ✅ 학원 선택 핸들러 추가
+  // 학원 선택 핸들러
   const handleAcademySelect = useCallback((academyIdStr: string) => {
     if (academyIdStr === 'new') {
       setFormData(prev => ({
@@ -658,22 +711,36 @@ export const useEventLogic = (
     setUIState(prev => ({ ...prev, showAcademyPicker: false }));
   }, [academies]);
 
-  // ✅ 시간 선택 핸들러들 추가
+  // ✅ 시간 선택 핸들러들 - 개선된 버전
   const handleStartTimeConfirm = useCallback((value: string) => {
+    console.log('⏰ Start time selected:', value);
+    
     setFormData(prev => ({ ...prev, startTime: value }));
     
     // 종료 시간 자동 조정
     if (schedule) {
-      const start = moment(value, 'HH:mm');
-      const interval = schedule.time_unit === '30min' ? 30 : 60;
-      const newEndTime = start.add(interval, 'minutes').format('HH:mm');
-      if (options.timeOptions.includes(newEndTime)) {
-        setFormData(prev => ({ ...prev, endTime: newEndTime }));
+      const calculatedEndTime = calculateEndTime(value, schedule);
+      
+      // 계산된 종료 시간이 유효한 시간 옵션에 있는지 확인
+      if (isValidTimeOption(calculatedEndTime, options.timeOptions)) {
+        setFormData(prev => ({ ...prev, endTime: calculatedEndTime }));
+        console.log('✅ End time auto-set to:', calculatedEndTime);
+      } else {
+        // 유효하지 않은 경우 다음 유효한 시간 찾기
+        const nextValidTime = findNextValidTime(value, options.timeOptions);
+        
+        if (nextValidTime) {
+          setFormData(prev => ({ ...prev, endTime: nextValidTime }));
+          console.log('✅ End time set to next valid time:', nextValidTime);
+        } else {
+          console.log('⚠️ No valid end time found, keeping current end time');
+        }
       }
     }
   }, [schedule, options.timeOptions]);
 
   const handleEndTimeConfirm = useCallback((value: string) => {
+    console.log('⏰ End time selected:', value);
     setFormData(prev => ({ ...prev, endTime: value }));
   }, []);
 

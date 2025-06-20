@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
@@ -27,7 +27,7 @@ interface Props {
 }
 
 const EventScreen: React.FC<Props> = ({ navigation, route }) => {
-  // 🎯 모든 비즈니스 로직이 커스텀 훅으로 분리됨 (navigation 전달)
+  // 모든 비즈니스 로직이 커스텀 훅으로 분리됨
   const {
     formData,
     uiState,
@@ -42,10 +42,12 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     handleAcademySelect,
     handleStartTimeConfirm,
     handleEndTimeConfirm,
-  } = useEventLogic(route.params, navigation); // ✅ navigation 전달
+  } = useEventLogic(route.params, navigation);
 
-  // 🎯 UI 이벤트 핸들러들 (비즈니스 로직 없이 단순한 상태 업데이트만)
-  const handleCancel = () => navigation.goBack();
+  // UI 이벤트 핸들러들
+  const handleCancel = () => {
+    navigation.goBack();
+  };
 
   const handleCategoryChange = (newCategory: any) => {
     updateFormData({ category: newCategory });
@@ -68,9 +70,20 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
     updateFormData({ selectedDays: newSelectedDays });
   };
 
+  // ✅ 시간 선택 디버깅을 위한 래퍼 핸들러들
+  const handleStartTimeSelect = (value: string) => {
+    handleStartTimeConfirm(value);
+    updateUIState({ showStartTimePicker: false });
+  };
+
+  const handleEndTimeSelect = (value: string) => {
+    handleEndTimeConfirm(value);
+    updateUIState({ showEndTimePicker: false });
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* 🎯 헤더 - 깔끔해진 구조 */}
+      {/* 헤더 */}
       <View style={styles.header}>
         <TouchableOpacity onPress={handleCancel} style={styles.headerButton}>
           <Ionicons name="close" size={24} color="#333" />
@@ -97,7 +110,9 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* 🎯 예외 편집 알림 */}
+
+
+        {/* 예외 편집 알림 */}
         {uiState.isEditingException && (
           <View style={styles.exceptionInfo}>
             <Ionicons name="information-circle-outline" size={16} color="#FF9500" />
@@ -107,7 +122,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 🎯 알림 관련 정보 표시 */}
+        {/* 알림 관련 정보 표시 */}
         {formData.category === '학원' && (
           <View style={styles.notificationInfo}>
             <Ionicons name="notifications-outline" size={16} color="#FF9500" />
@@ -117,7 +132,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 🎯 요일 선택 - 상태만 props로 전달 */}
+        {/* 요일 선택 */}
         <View style={styles.section}>
           <View style={styles.dayButtons}>
             {options.availableDays.map((day) => (
@@ -141,7 +156,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         </View>
 
-        {/* 🎯 시간 설정 */}
+        {/* 시간 설정 */}
         <View style={styles.section}>
           <View style={styles.timeContainer}>
             <Text style={styles.timeLabel}>시간</Text>
@@ -149,7 +164,10 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
               {/* 시작 시간 버튼 */}
               <TouchableOpacity
                 style={styles.timeButton}
-                onPress={() => updateUIState({ showStartTimePicker: true })}
+                onPress={() => {
+                  console.log('📱 Start time picker opened');
+                  updateUIState({ showStartTimePicker: true });
+                }}
               >
                 <Text style={styles.timeButtonText}>
                   {formData.startTime ? moment(formData.startTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
@@ -162,7 +180,10 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
               {/* 종료 시간 버튼 */}
               <TouchableOpacity
                 style={styles.timeButton}
-                onPress={() => updateUIState({ showEndTimePicker: true })}
+                onPress={() => {
+                  console.log('📱 End time picker opened');
+                  updateUIState({ showEndTimePicker: true });
+                }}
               >
                 <Text style={styles.timeButtonText}>
                   {formData.endTime ? moment(formData.endTime, 'HH:mm').format('A hh:mm') : '시간 선택'}
@@ -172,7 +193,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         </View>
 
-        {/* 🎯 분류 선택 */}
+        {/* 분류 선택 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>분류</Text>
           <View style={styles.categoryContainer}>
@@ -196,7 +217,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         </View>
 
-        {/* 🎯 학원 선택 시 추가 필드 */}
+        {/* 학원 선택 시 추가 필드 */}
         {formData.category === '학원' && (
           <>
             {/* 기존 학원 선택 */}
@@ -259,7 +280,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </>
         )}
 
-        {/* 🎯 일반 제목 (학원이 아닌 경우) */}
+        {/* 일반 제목 (학원이 아닌 경우) */}
         {formData.category !== '학원' && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>제목</Text>
@@ -276,14 +297,17 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 🎯 반복 설정 */}
+        {/* 반복 설정 */}
         {(!isEditMode || !formData.isRecurring) && (
           <View style={styles.section}>
             <View style={styles.toggleContainer}>
               <Text style={styles.toggleLabel}>선택한 요일 매주 반복</Text>
               <Switch
                 value={formData.isRecurring}
-                onValueChange={(value) => updateFormData({ isRecurring: value })}
+                onValueChange={(value) => {
+                  console.log('🔄 Recurring toggle changed to:', value);
+                  updateFormData({ isRecurring: value });
+                }}
                 trackColor={{ false: '#E5E5EA', true: '#34C759' }}
                 thumbColor={formData.isRecurring ? '#fff' : '#fff'}
               />
@@ -291,7 +315,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 🎯 반복 일정 정보 표시 */}
+        {/* 반복 일정 정보 표시 */}
         {isEditMode && formData.isRecurring && !uiState.isEditingException && (
           <View style={styles.section}>
             <View style={styles.recurringInfo}>
@@ -303,7 +327,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         )}
 
-        {/* 🎯 메모 */}
+        {/* 메모 */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>메모</Text>
           <TextInput
@@ -318,7 +342,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
       </ScrollView>
 
-      {/* 🎯 반복 일정 편집 옵션 모달 */}
+      {/* 반복 일정 편집 옵션 모달 */}
       <Modal
         visible={uiState.showRecurringEditModal}
         transparent={true}
@@ -368,7 +392,7 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
       </Modal>
 
-      {/* 🎯 반복 일정 삭제 옵션 모달 */}
+      {/* 반복 일정 삭제 옵션 모달 */}
       <Modal
         visible={uiState.showRecurringDeleteModal}
         transparent={true}
@@ -440,17 +464,17 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
       </Modal>
 
-      {/* 🎯 CustomPicker들 - 훅의 핸들러 사용 */}
+      {/* CustomPicker들 */}
       <CustomPicker
         visible={uiState.showStartTimePicker}
         title="시작 시간"
         selectedValue={formData.startTime}
         options={options.timeOptions}
-        onCancel={() => updateUIState({ showStartTimePicker: false })}
-        onConfirm={(value) => {
-          handleStartTimeConfirm(value);
+        onCancel={() => {
+          console.log('❌ Start time picker cancelled');
           updateUIState({ showStartTimePicker: false });
         }}
+        onConfirm={handleStartTimeSelect}
       />
 
       <CustomPicker
@@ -458,11 +482,11 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         title="종료 시간"
         selectedValue={formData.endTime}
         options={options.timeOptions}
-        onCancel={() => updateUIState({ showEndTimePicker: false })}
-        onConfirm={(value) => {
-          handleEndTimeConfirm(value);
+        onCancel={() => {
+          console.log('❌ End time picker cancelled');
           updateUIState({ showEndTimePicker: false });
         }}
+        onConfirm={handleEndTimeSelect}
       />
 
       {/* 학원 선택 Picker */}
@@ -473,13 +497,12 @@ const EventScreen: React.FC<Props> = ({ navigation, route }) => {
         options={[...options.academyOptions.map(opt => opt.value), 'new']}
         optionLabels={[...options.academyOptions.map(opt => opt.label), '새 학원 추가']}
         onCancel={() => updateUIState({ showAcademyPicker: false })}
-        onConfirm={handleAcademySelect} // ✅ 훅의 핸들러 사용
+        onConfirm={handleAcademySelect}
       />
     </SafeAreaView>
   );
 };
 
-// 🎯 스타일은 그대로 유지 (변경사항 없음)
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -511,6 +534,26 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 20,
+  },
+  // ✅ 디버깅 정보 스타일 추가
+  debugInfo: {
+    backgroundColor: '#FFF3E0',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#FFE0B2',
+  },
+  debugTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#F57C00',
+    marginBottom: 8,
+  },
+  debugText: {
+    fontSize: 12,
+    color: '#F57C00',
+    marginBottom: 2,
   },
   exceptionInfo: {
     flexDirection: 'row',
