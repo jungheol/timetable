@@ -78,11 +78,9 @@ class HolidayService {
       // 12개월 데이터를 순차적으로 가져오기
       for (let month = 1; month <= 12; month++) {
         try {
-          console.log(`📅 [HolidayService] Fetching month ${month}/${year}`);
           const monthHolidays = await this.fetchHolidaysForMonth(year, month);
           
           if (monthHolidays.length > 0) {
-            console.log(`✅ [HolidayService] Month ${month}: ${monthHolidays.length} holidays`);
             holidays.push(...monthHolidays);
           } else {
             console.log(`📋 [HolidayService] Month ${month}: No holidays`);
@@ -96,9 +94,7 @@ class HolidayService {
           errors.push(errorMsg);
         }
       }
-      
-      console.log(`🎌 [HolidayService] Year ${year} summary: ${holidays.length} holidays, ${errors.length} errors`);
-      
+            
       if (errors.length > 0) {
         console.log(`⚠️ [HolidayService] Errors encountered:`, errors);
       }
@@ -114,7 +110,6 @@ class HolidayService {
   private async fetchHolidaysForMonth(year: number, month: number): Promise<Holiday[]> {
     try {
       const url = this.buildApiUrl(year, month);
-      console.log(`🔗 [HolidayService] API URL: ${url.substring(0, 100)}...`);
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
@@ -122,7 +117,6 @@ class HolidayService {
         controller.abort();
       }, 10000);
       
-      console.log(`📡 [HolidayService] Making API request to ${year}-${month}`);
       const response = await fetch(url, {
         method: 'GET',
         headers: {
@@ -133,27 +127,22 @@ class HolidayService {
       });
       
       clearTimeout(timeoutId);
-
-      console.log(`📶 [HolidayService] Response status: ${response.status} ${response.statusText}`);
       
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
       const text = await response.text();
-      console.log(`📄 [HolidayService] Response length: ${text.length} characters`);
       
       if (text.length === 0) {
         throw new Error('Empty response from API');
       }
       
       // XML 파싱
-      console.log(`🔍 [HolidayService] Parsing XML response`);
       const jsonData = this.parseXmlToJson(text);
       
       // 데이터 변환
       const holidays = this.transformApiDataToHolidays(jsonData, year, month);
-      console.log(`✅ [HolidayService] Parsed ${holidays.length} holidays for ${year}-${month}`);
       
       return holidays;
     } catch (error: any) {
@@ -187,9 +176,7 @@ class HolidayService {
 
   // XML 파싱 (로그 최소화하되 에러는 기록)
   private parseXmlToJson(xmlText: string): any {
-    try {      
-      console.log(`🔍 [HolidayService] Starting XML parsing`);
-      
+    try {            
       // 기본 XML 검증
       if (!xmlText.includes('<') || !xmlText.includes('>')) {
         console.warn(`⚠️ [HolidayService] Invalid XML format`);
@@ -208,10 +195,8 @@ class HolidayService {
       const totalCountMatch = xmlText.match(/<totalCount>(\d+)<\/totalCount>/);
       if (totalCountMatch) {
         const totalCount = parseInt(totalCountMatch[1]);
-        console.log(`📊 [HolidayService] Total count from API: ${totalCount}`);
         
         if (totalCount === 0) {
-          console.log(`📋 [HolidayService] No items in API response`);
           return { response: { body: { items: {} } } };
         }
       }
@@ -223,9 +208,7 @@ class HolidayService {
         console.warn(`⚠️ [HolidayService] No item tags found in XML`);
         return { response: { body: { items: {} } } };
       }
-      
-      console.log(`🔍 [HolidayService] Found ${itemMatches.length} item(s) in XML`);
-      
+            
       // 각 아이템 파싱
       const items: HolidayApiItem[] = [];
       
@@ -252,9 +235,7 @@ class HolidayService {
           console.warn(`⚠️ [HolidayService] Incomplete item data:`, item);
         }
       }
-      
-      console.log(`✅ [HolidayService] Successfully parsed ${items.length} valid items`);
-      
+            
       return {
         response: {
           body: {
@@ -272,20 +253,16 @@ class HolidayService {
 
   // API 응답 데이터를 Holiday 객체로 변환
   private transformApiDataToHolidays(apiData: any, year: number, month: number): Holiday[] {
-    try {
-      console.log(`🔄 [HolidayService] Transforming API data for ${year}-${month}`);
-      
+    try {      
       const holidays: Holiday[] = [];
       const items = apiData?.response?.body?.items?.item;
       
       if (!items) {
-        console.log(`📋 [HolidayService] No items to transform`);
         return holidays;
       }
       
       // 배열이 아닌 경우 배열로 변환
       const itemArray = Array.isArray(items) ? items : [items];
-      console.log(`🔍 [HolidayService] Processing ${itemArray.length} item(s)`);
       
       for (const item of itemArray) {
         try {
@@ -315,13 +292,11 @@ class HolidayService {
           };
           
           holidays.push(holiday as Holiday);
-          console.log(`✅ [HolidayService] Added holiday: ${holiday.date} - ${holiday.name}`);
         } catch (itemError: any) {
           console.error(`❌ [HolidayService] Error processing item:`, item, itemError);
         }
       }
       
-      console.log(`✅ [HolidayService] Successfully transformed ${holidays.length} holidays`);
       return holidays;
     } catch (error: any) {
       console.error(`❌ [HolidayService] Data transformation error:`, error);
