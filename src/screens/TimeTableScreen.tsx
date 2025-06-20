@@ -614,6 +614,10 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
           {events.filter(e => e.is_recurring).length > 0 && 
             ` (반복: ${events.filter(e => e.is_recurring).length}개)`
           }
+          {/* ✅ 예외 표시 추가 */}
+          {events.filter(e => !!(e as any).exception_id).length > 0 && 
+            ` (예외: ${events.filter(e => !!(e as any).exception_id).length}개)`
+          }
           {Object.keys(holidays).length > 0 && 
             ` | 공휴일: ${Object.keys(holidays).length}개`
           }

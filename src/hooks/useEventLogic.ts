@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import moment from 'moment';
 import { Alert } from 'react-native';
-import DatabaseService, { Event, Academy, Schedule } from '../services/DatabaseService';
+import DatabaseService, { Event, Academy, Schedule, RecurringException } from '../services/DatabaseService';
 import { useAcademyNotifications } from './useAcademyNotifications';
 
 // 타입 정의
@@ -80,30 +80,21 @@ const createInitialUIState = (): EventUIState => ({
   isEditingException: false,
 });
 
-// ✅ 시간 계산 헬퍼 함수 추가
+// ✅ 시간 계산 헬퍼 함수
 const calculateEndTime = (startTime: string, schedule: Schedule | null): string => {
   if (!schedule || !startTime) return '';
   
-  console.log('⏰ Calculating end time for:', startTime);
-  console.log('📋 Schedule time unit:', schedule.time_unit);
-  
   const start = moment(startTime, 'HH:mm');
   const interval = schedule.time_unit === '30min' ? 30 : 60;
-  
-  // ✅ clone()을 사용해서 원본 시간을 보존
   const endTime = start.clone().add(interval, 'minutes').format('HH:mm');
-  
-  console.log(`⏰ Time calculation: ${startTime} + ${interval}min = ${endTime}`);
   
   return endTime;
 };
 
-// ✅ 유효한 시간 옵션인지 확인하는 헬퍼 함수
 const isValidTimeOption = (time: string, timeOptions: string[]): boolean => {
   return timeOptions.includes(time);
 };
 
-// ✅ 다음 유효한 시간 찾기 헬퍼 함수
 const findNextValidTime = (currentTime: string, timeOptions: string[]): string | null => {
   return timeOptions.find(time => 
     moment(time, 'HH:mm').isAfter(moment(currentTime, 'HH:mm'))
@@ -129,6 +120,9 @@ export const useEventLogic = (
   const [uiState, setUIState] = useState<EventUIState>(createInitialUIState);
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [academies, setAcademies] = useState<Academy[]>([]);
+  
+  // ✅ 현재 예외 정보 저장
+  const [currentException, setCurrentException] = useState<RecurringException | null>(null);
 
   // 편집 모드 체크
   const isEditMode = !!event;
@@ -146,7 +140,6 @@ export const useEventLogic = (
 
   // 옵션 생성
   const options = useMemo<EventOptions>(() => {
-    // Boolean 타입 안전 확인
     const availableDays = Boolean(schedule?.show_weekend)
       ? weekdays 
       : weekdays.slice(0, 5);
@@ -186,6 +179,39 @@ export const useEventLogic = (
     del_yn: Boolean(eventData.del_yn),
   }), []);
 
+  // ✅ 예외 데이터 로드 개선
+  const loadExceptionData = useCallback(async (eventId: number): Promise<RecurringException | null> => {
+    try {
+        console.log('🔍 Looking for exceptions for event:', eventId, 'on date:', selectedDate);
+        
+        const exceptions = await DatabaseService.getRecurringExceptions(
+        eventId,
+        selectedDate,
+        selectedDate
+        );
+        
+        if (exceptions.length > 0) {
+        const exception = exceptions[0];
+        console.log('✅ Found exception:', {
+            id: exception.id,
+            type: exception.exception_type,
+            date: exception.exception_date,
+            hasModifications: !!(exception.modified_title || exception.modified_start_time || exception.modified_end_time)
+        });
+        setCurrentException(exception);
+        return exception;
+        }
+        
+        console.log('ℹ️ No exception found for this date');
+        setCurrentException(null);
+        return null;
+    } catch (error) {
+        console.error('❌ Error loading exception data:', error);
+        setCurrentException(null);
+        return null;
+    }
+    }, [selectedDate]);
+
   // 초기 데이터 로드
   const loadInitialData = useCallback(async () => {
     try {
@@ -200,7 +226,6 @@ export const useEventLogic = (
       if (event) {
         await loadEventData(event, academyList);
       } else {
-        // ✅ 스케줄이 로드된 후에 새 이벤트 폼 초기화
         initializeNewEventForm(activeSchedule);
       }
     } catch (error) {
@@ -208,40 +233,6 @@ export const useEventLogic = (
       Alert.alert('오류', '데이터를 불러오는 중 오류가 발생했습니다.');
     }
   }, [event, scheduleId]);
-
-  // 이벤트 데이터 로드 (편집 모드)
-  const loadEventData = useCallback(async (eventData: Event, academyList: Academy[]) => {
-    try {
-      const sanitizedEvent = sanitizeEventData(eventData);
-      
-      // 기본 정보 설정
-      setFormData(prev => ({
-        ...prev,
-        title: sanitizedEvent.title,
-        startTime: sanitizedEvent.start_time,
-        endTime: sanitizedEvent.end_time,
-        category: sanitizedEvent.category,
-        isRecurring: sanitizedEvent.is_recurring,
-      }));
-
-      // 예외 편집 모드 확인
-      setUIState(prev => ({
-        ...prev,
-        isEditingException: Boolean((sanitizedEvent as any).exception_id),
-      }));
-
-      // 요일 정보 설정
-      await loadDaySelection(sanitizedEvent);
-      
-      // 학원 정보 설정
-      if (sanitizedEvent.category === '학원' && sanitizedEvent.academy_id) {
-        loadAcademyInfo(sanitizedEvent.academy_id, academyList);
-      }
-    } catch (error) {
-      console.error('Error loading event data:', error);
-      Alert.alert('오류', '일정 정보를 불러오는 중 오류가 발생했습니다.');
-    }
-  }, [sanitizeEventData]);
 
   // 요일 선택 로드
   const loadDaySelection = useCallback(async (sanitizedEvent: Event) => {
@@ -288,57 +279,200 @@ export const useEventLogic = (
     }
   }, []);
 
-  // ✅ 새 이벤트 폼 초기화 - 개선된 버전
+  // ✅ 이벤트 데이터 로드 개선 - null 체크 추가
+  const loadEventData = useCallback(async (eventData: Event, academyList: Academy[]) => {
+    try {
+        const sanitizedEvent = sanitizeEventData(eventData);
+        console.log('📝 Loading event data:', {
+        id: sanitizedEvent.id,
+        title: sanitizedEvent.title,
+        startTime: sanitizedEvent.start_time,
+        endTime: sanitizedEvent.end_time,
+        category: sanitizedEvent.category,
+        isRecurring: sanitizedEvent.is_recurring,
+        hasExceptionId: !!(eventData as any).exception_id,
+        selectedDate
+        });
+        
+        // ✅ 기본 폼 데이터를 먼저 설정 (예외와 상관없이)
+        const baseFormData: Partial<EventFormData> = {
+        title: sanitizedEvent.title,
+        startTime: sanitizedEvent.start_time,
+        endTime: sanitizedEvent.end_time,
+        category: sanitizedEvent.category,
+        isRecurring: sanitizedEvent.is_recurring,
+        };
+        
+        console.log('📝 Setting base form data:', baseFormData);
+        setFormData(prev => ({ ...prev, ...baseFormData }));
+        
+        // ✅ 예외 ID가 있는지 먼저 확인 (이벤트 객체에서)
+        const hasExceptionId = !!(eventData as any).exception_id;
+        let exception: RecurringException | null = null;
+        
+        // ✅ 반복 일정인 경우 예외 확인
+        if (sanitizedEvent.is_recurring && selectedDate) {
+        // 예외 ID가 있거나 DB에서 예외를 찾아봄
+        if (hasExceptionId) {
+            console.log('✅ Event has exception_id, treating as exception');
+            setUIState(prev => ({ ...prev, isEditingException: true }));
+            
+            // 예외 데이터 로드
+            exception = await loadExceptionData(sanitizedEvent.id);
+        } else {
+            // 예외 ID가 없어도 DB에서 확인
+            exception = await loadExceptionData(sanitizedEvent.id);
+            
+            if (exception) {
+            console.log('✅ Found exception in DB, setting exception mode');
+            setUIState(prev => ({ ...prev, isEditingException: true }));
+            }
+        }
+        
+        // ✅ 예외가 있는 경우 예외 데이터로 폼 업데이트
+        if (exception && exception.exception_type === 'modify') {
+            console.log('✅ Loading exception data for date:', selectedDate);
+            
+            // 예외 데이터로 폼 업데이트 - 기본값 위에 덮어쓰기
+            const exceptionFormUpdates: Partial<EventFormData> = {};
+            
+            if (exception.modified_title !== null && exception.modified_title !== undefined && exception.modified_title.trim() !== '') {
+            exceptionFormUpdates.title = exception.modified_title;
+            console.log(`📝 Using exception title: "${exception.modified_title}"`);
+            } else {
+            console.log(`📝 Using original title: "${sanitizedEvent.title}"`);
+            }
+            
+            if (exception.modified_start_time !== null && exception.modified_start_time !== undefined && exception.modified_start_time.trim() !== '') {
+            exceptionFormUpdates.startTime = exception.modified_start_time;
+            console.log(`⏰ Using exception start time: "${exception.modified_start_time}"`);
+            } else {
+            console.log(`⏰ Using original start time: "${sanitizedEvent.start_time}"`);
+            }
+            
+            if (exception.modified_end_time !== null && exception.modified_end_time !== undefined && exception.modified_end_time.trim() !== '') {
+            exceptionFormUpdates.endTime = exception.modified_end_time;
+            console.log(`⏰ Using exception end time: "${exception.modified_end_time}"`);
+            } else {
+            console.log(`⏰ Using original end time: "${sanitizedEvent.end_time}"`);
+            }
+            
+            if (exception.modified_category !== null && exception.modified_category !== undefined && exception.modified_category.trim() !== '') {
+            exceptionFormUpdates.category = exception.modified_category as Event['category'];
+            console.log(`📂 Using exception category: "${exception.modified_category}"`);
+            } else {
+            console.log(`📂 Using original category: "${sanitizedEvent.category}"`);
+            }
+            
+            // 예외 데이터 적용
+            setFormData(prev => {
+            const updatedData = { ...prev, ...exceptionFormUpdates };
+            console.log('📝 Final form data after exception:', {
+                title: updatedData.title,
+                startTime: updatedData.startTime,
+                endTime: updatedData.endTime,
+                category: updatedData.category
+            });
+            return updatedData;
+            });
+            
+            // 수정된 학원이 있는 경우
+            if (exception.modified_academy_id !== null && exception.modified_academy_id !== undefined) {
+            const modifiedAcademy = academyList.find(a => a.id === exception?.modified_academy_id);
+            if (modifiedAcademy) {
+                setFormData(prev => ({
+                ...prev,
+                selectedAcademy: modifiedAcademy,
+                academyName: modifiedAcademy.name,
+                selectedSubject: modifiedAcademy.subject,
+                }));
+                console.log(`🏫 Using exception academy: "${modifiedAcademy.name}"`);
+            }
+            } else if (sanitizedEvent.category === '학원' && sanitizedEvent.academy_id) {
+            // 예외에서 학원이 수정되지 않은 경우 원본 학원 정보 사용
+            loadAcademyInfo(sanitizedEvent.academy_id, academyList);
+            }
+            
+            console.log('✅ Exception form data loaded');
+            await loadDaySelection(sanitizedEvent);
+            return;
+        } else if (exception && exception.exception_type === 'cancel') {
+            // 취소된 일정인 경우에 대한 처리
+            console.log('ℹ️ This event is cancelled on this date');
+            setUIState(prev => ({ ...prev, isEditingException: true }));
+        }
+        }
+        
+        // ✅ 예외가 없거나 일반 일정인 경우는 이미 기본 데이터가 설정됨
+        if (!exception || exception.exception_type !== 'modify') {
+        setUIState(prev => ({ ...prev, isEditingException: false }));
+        
+        console.log('📝 Using original event data (no exception)');
+
+        // 요일 정보 설정
+        await loadDaySelection(sanitizedEvent);
+        
+        // 학원 정보 설정
+        if (sanitizedEvent.category === '학원' && sanitizedEvent.academy_id) {
+            loadAcademyInfo(sanitizedEvent.academy_id, academyList);
+        }
+        }
+        
+        console.log('✅ Event data loaded successfully');
+        
+    } catch (error) {
+        console.error('❌ Error loading event data:', error);
+        Alert.alert('오류', '일정 정보를 불러오는 중 오류가 발생했습니다.');
+    }
+    }, [sanitizeEventData, selectedDate, loadExceptionData, loadDaySelection, loadAcademyInfo]);
+
+  // 새 이벤트 폼 초기화
   const initializeNewEventForm = useCallback((currentSchedule?: Schedule | null) => {
     const scheduleToUse = currentSchedule || schedule;
     
     const currentDayIndex = moment(selectedDate).day();
     const currentDayKey = weekdays.find(day => day.index === currentDayIndex)?.key;
     
-    console.log('🆕 Initializing new event form');
-    console.log('📅 Selected date:', selectedDate);
-    console.log('⏰ Selected time:', selectedTime);
-    console.log('📋 Schedule:', scheduleToUse);
+    console.log('🆕 Initializing new event form with schedule:', scheduleToUse);
     
-    // 기본 폼 데이터 설정
     const formUpdates: Partial<EventFormData> = {
-      selectedDays: currentDayKey ? new Set([currentDayKey]) : new Set(),
+        selectedDays: currentDayKey ? new Set([currentDayKey]) : new Set(),
+        title: '', // 명시적으로 빈 문자열 설정
+        category: '선택안함',
     };
     
-    // ✅ 시간 설정 로직 개선
     if (selectedTime && scheduleToUse) {
-      console.log(`⏰ Using selected time: ${selectedTime}`);
-      
-      const calculatedEndTime = calculateEndTime(selectedTime, scheduleToUse);
-      
-      formUpdates.startTime = selectedTime;
-      formUpdates.endTime = calculatedEndTime;
-      
-      console.log(`✅ Time set: ${selectedTime} - ${calculatedEndTime}`);
-      
+        const calculatedEndTime = calculateEndTime(selectedTime, scheduleToUse);
+        formUpdates.startTime = selectedTime;
+        formUpdates.endTime = calculatedEndTime;
+        console.log(`⏰ Using selected time: ${selectedTime} ~ ${calculatedEndTime}`);
     } else if (scheduleToUse) {
-      // selectedTime이 없는 경우 스케줄의 시작 시간을 기본값으로 사용
-      const defaultStart = scheduleToUse.start_time;
-      const calculatedEndTime = calculateEndTime(defaultStart, scheduleToUse);
-      
-      console.log(`⏰ Using default times: ${defaultStart} - ${calculatedEndTime}`);
-      
-      formUpdates.startTime = defaultStart;
-      formUpdates.endTime = calculatedEndTime;
+        const defaultStart = scheduleToUse.start_time;
+        const calculatedEndTime = calculateEndTime(defaultStart, scheduleToUse);
+        formUpdates.startTime = defaultStart;
+        formUpdates.endTime = calculatedEndTime;
+        console.log(`⏰ Using default time: ${defaultStart} ~ ${calculatedEndTime}`);
     }
     
-    setFormData(prev => ({
-      ...prev,
-      ...formUpdates,
-    }));
-    
-    console.log('✅ Form initialized with:', formUpdates);
-  }, [selectedDate, selectedTime, schedule, weekdays]);
+    console.log('🆕 New event form updates:', formUpdates);
+    setFormData(prev => ({ ...prev, ...formUpdates }));
+    }, [selectedDate, selectedTime, schedule, weekdays]);
 
   // 폼 데이터 업데이트
   const updateFormData = useCallback((updates: Partial<EventFormData>) => {
-    setFormData(prev => ({ ...prev, ...updates }));
-  }, []);
+    console.log('📝 Updating form data with:', updates);
+    setFormData(prev => {
+        const newData = { ...prev, ...updates };
+        console.log('📝 Form data state after update:', {
+        title: newData.title,
+        startTime: newData.startTime,
+        endTime: newData.endTime,
+        category: newData.category,
+        academyName: newData.academyName
+        });
+        return newData;
+    });
+    }, []);
 
   // UI 상태 업데이트
   const updateUIState = useCallback((updates: Partial<EventUIState>) => {
@@ -347,151 +481,448 @@ export const useEventLogic = (
 
   // 유효성 검사
   const validateForm = useCallback((): boolean => {
+    console.log('🔍 Validating form data:', {
+        selectedDays: Array.from(formData.selectedDays),
+        startTime: formData.startTime,
+        endTime: formData.endTime,
+        title: formData.title,
+        academyName: formData.academyName,
+        category: formData.category
+    });
+
     if (formData.selectedDays.size === 0) {
-      Alert.alert('오류', '최소 하나의 요일을 선택해주세요.');
-      return false;
+        Alert.alert('오류', '최소 하나의 요일을 선택해주세요.');
+        return false;
     }
 
     if (!formData.startTime || !formData.endTime) {
-      Alert.alert('오류', '시작 시간과 종료 시간을 설정해주세요.');
-      return false;
+        Alert.alert('오류', '시작 시간과 종료 시간을 설정해주세요.');
+        return false;
     }
 
     if (moment(formData.startTime, 'HH:mm').isSameOrAfter(moment(formData.endTime, 'HH:mm'))) {
-      Alert.alert('오류', '종료 시간은 시작 시간보다 늦어야 합니다.');
-      return false;
+        Alert.alert('오류', '종료 시간은 시작 시간보다 늦어야 합니다.');
+        return false;
     }
 
     const eventTitle = formData.category === '학원' ? formData.academyName : formData.title;
-    if (!eventTitle.trim()) {
-      Alert.alert('오류', formData.category === '학원' ? '학원명을 입력해주세요.' : '제목을 입력해주세요.');
-      return false;
+    console.log('🔍 Determined event title for validation:', eventTitle);
+    
+    if (!eventTitle || !eventTitle.trim()) {
+        Alert.alert('오류', formData.category === '학원' ? '학원명을 입력해주세요.' : '제목을 입력해주세요.');
+        return false;
     }
 
+    console.log('✅ Form validation passed');
     return true;
-  }, [formData]);
+    }, [formData]);
 
-  // 저장 완료 후 화면 닫기 헬퍼
+  // 저장 완료 후 화면 닫기
   const finishSave = useCallback(() => {
     console.log('✅ Save completed, calling onSave and navigating back');
     onSave();
     navigation.goBack();
   }, [onSave, navigation]);
 
-  // 저장 처리
+  // ✅ 폼 상태 보존을 위한 디버깅 함수
+    const debugFormStateBeforeSave = useCallback(() => {
+    console.log('🔍 === FORM STATE BEFORE SAVE ===');
+    console.log('Title:', `"${formData.title}"`);
+    console.log('Start Time:', `"${formData.startTime}"`);
+    console.log('End Time:', `"${formData.endTime}"`);
+    console.log('Category:', `"${formData.category}"`);
+    console.log('Academy Name:', `"${formData.academyName}"`);
+    console.log('Is Recurring:', formData.isRecurring);
+    console.log('Selected Days:', Array.from(formData.selectedDays));
+    console.log('Is Editing Exception:', uiState.isEditingException);
+    console.log('=== END FORM STATE BEFORE SAVE ===');
+    
+    return { ...formData }; // 복사본 반환
+    }, [formData, uiState.isEditingException]);
+
+  
+    // ✅ 디버깅을 위한 현재 폼 상태 체크 함수
+    const debugFormState = useCallback(() => {
+    console.log('🔍 Current form state debug:', {
+        title: formData.title,
+        startTime: formData.startTime,
+        endTime: formData.endTime,
+        category: formData.category,
+        academyName: formData.academyName,
+        selectedAcademy: formData.selectedAcademy?.name,
+        isRecurring: formData.isRecurring,
+        selectedDaysCount: formData.selectedDays.size,
+        isEditingException: uiState.isEditingException,
+        currentExceptionId: currentException?.id
+    });
+    }, [formData, uiState.isEditingException, currentException]);
+
+  // ✅ 저장 처리 개선
   const handleSave = useCallback(async () => {
     console.log('🔄 handleSave called');
     
+    // 저장 전에 폼 상태 보존
+    const preservedFormData = debugFormStateBeforeSave();
+    
     if (!validateForm()) {
-      console.log('❌ Form validation failed');
-      return;
+        console.log('❌ Form validation failed');
+        return;
     }
 
     setUIState(prev => ({ ...prev, isLoading: true }));
 
     try {
-      if (isEditMode) {
+        if (isEditMode) {
         const sanitizedEvent = event ? sanitizeEventData(event) : null;
         
-        if (sanitizedEvent?.is_recurring && !uiState.isEditingException) {
-          console.log('🔄 Opening recurring edit modal');
-          setUIState(prev => ({ 
-            ...prev, 
-            showRecurringEditModal: true, 
-            isLoading: false
-          }));
-          return;
+        if (sanitizedEvent?.is_recurring) {
+            if (uiState.isEditingException) {
+            console.log('🔄 Updating existing exception');
+            await updateExistingException();
+            } else {
+            console.log('🔄 Opening recurring edit modal with preserved data');
+            // 폼 데이터를 다시 설정하여 보존
+            setFormData(preservedFormData);
+            setUIState(prev => ({ 
+                ...prev, 
+                showRecurringEditModal: true, 
+                isLoading: false
+            }));
+            return;
+            }
         } else {
-          console.log('🔄 Updating existing event');
-          await updateExistingEvent();
+            console.log('🔄 Updating regular event');
+            await updateExistingEvent();
         }
-      } else {
+        } else {
         if (formData.isRecurring) {
-          console.log('🔄 Saving recurring event');
-          await saveRecurringEvent();
+            console.log('🔄 Saving recurring event');
+            await saveRecurringEvent();
         } else {
-          console.log('🔄 Saving single event');
-          await saveSingleEvent();
+            console.log('🔄 Saving single event');
+            await saveSingleEvent();
         }
-      }
+        }
 
-      console.log('✅ Save operation completed');
-      finishSave();
-      
+        console.log('✅ Save operation completed');
+        finishSave();
+        
     } catch (error) {
-      console.error('❌ Error saving event:', error);
-      Alert.alert('오류', '일정을 저장하는 중 오류가 발생했습니다.');
+        console.error('❌ Error saving event:', error);
+        Alert.alert('오류', '일정을 저장하는 중 오류가 발생했습니다.');
     } finally {
-      setUIState(prev => ({ ...prev, isLoading: false }));
+        setUIState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [validateForm, isEditMode, event, uiState.isEditingException, formData, finishSave, sanitizeEventData]);
+    }, [validateForm, isEditMode, event, uiState.isEditingException, formData, finishSave, sanitizeEventData, debugFormStateBeforeSave]);
+
+  // ✅ 기존 예외 수정 - null 체크 추가
+  const updateExistingException = useCallback(async () => {
+    if (!currentException || !event?.id) {
+        console.log('❌ No current exception or event found');
+        return;
+    }
+
+    // 현재 폼 데이터 보존
+    const preservedFormData = { ...formData };
+    console.log('🔄 Updating existing exception with current form data:', {
+        exceptionId: currentException.id,
+        eventId: event.id,
+        date: selectedDate,
+        preservedFormData: {
+        title: preservedFormData.title,
+        academyName: preservedFormData.academyName,
+        category: preservedFormData.category,
+        startTime: preservedFormData.startTime,
+        endTime: preservedFormData.endTime
+        }
+    });
+
+    const eventTitle = preservedFormData.category === '학원' ? preservedFormData.academyName : preservedFormData.title;
+    let academyId: number | undefined = preservedFormData.selectedAcademy?.id;
+    
+    // 학원 카테고리인 경우 학원 생성/조회
+    if (preservedFormData.category === '학원' && preservedFormData.academyName.trim()) {
+        try {
+        academyId = await DatabaseService.createAcademyForRecurringEvent(
+            preservedFormData.academyName.trim(),
+            preservedFormData.selectedSubject,
+            scheduleId
+        );
+        console.log('✅ Academy created/found with ID:', academyId);
+        } catch (error) {
+        console.error('❌ Error creating academy:', error);
+        Alert.alert('오류', '학원 정보 저장 중 오류가 발생했습니다.');
+        return;
+        }
+    }
+
+    // ✅ 예외 업데이트 - 보존된 데이터 사용
+    const updatedException: RecurringException = {
+        ...currentException,
+        exception_type: 'modify',
+        modified_title: eventTitle?.trim() || undefined,
+        modified_start_time: preservedFormData.startTime || undefined,
+        modified_end_time: preservedFormData.endTime || undefined,
+        modified_category: preservedFormData.category || undefined,
+        modified_academy_id: academyId || undefined,
+    };
+
+    try {
+        await DatabaseService.updateRecurringException(updatedException);
+        console.log('✅ Exception updated successfully with preserved data');
+    } catch (error) {
+        console.error('❌ Error updating exception:', error);
+        throw error;
+    }
+    }, [currentException, event, formData, scheduleId, selectedDate]);
+
+    // ✅ 폼 데이터를 직접 받는 새로운 saveAsException 함수
+    const saveAsExceptionWithData = useCallback(async (preservedFormData: EventFormData) => {
+    if (!event?.id || !selectedDate) return;
+
+    console.log('🔄 Saving as exception with preserved data for date:', selectedDate, {
+        eventId: event.id,
+        preservedFormData: {
+        title: preservedFormData.title,
+        academyName: preservedFormData.academyName,
+        category: preservedFormData.category,
+        startTime: preservedFormData.startTime,
+        endTime: preservedFormData.endTime,
+        selectedAcademy: preservedFormData.selectedAcademy?.name
+        }
+    });
+
+    // ✅ 제목 결정 로직 - 보존된 데이터 사용
+    let eventTitle = '';
+    if (preservedFormData.category === '학원') {
+        eventTitle = preservedFormData.academyName?.trim() || '';
+    } else {
+        eventTitle = preservedFormData.title?.trim() || '';
+    }
+
+    console.log('📝 Determined event title from preserved data:', eventTitle);
+
+    let academyId: number | undefined = preservedFormData.selectedAcademy?.id;
+    
+    // 학원 카테고리인 경우 학원 생성/조회
+    if (preservedFormData.category === '학원' && eventTitle) {
+        try {
+        academyId = await DatabaseService.createAcademyForRecurringEvent(
+            eventTitle,
+            preservedFormData.selectedSubject,
+            scheduleId
+        );
+        console.log('✅ Academy created/found with ID:', academyId);
+        } catch (error) {
+        console.error('❌ Error creating academy:', error);
+        Alert.alert('오류', '학원 정보 저장 중 오류가 발생했습니다.');
+        return;
+        }
+    }
+
+    // ✅ 저장할 데이터 검증 및 로깅 - 보존된 데이터 사용
+    const exceptionData = {
+        recurring_event_id: event.id,
+        exception_date: selectedDate,
+        exception_type: 'modify' as const,
+        modified_title: eventTitle || undefined,
+        modified_start_time: preservedFormData.startTime || undefined,
+        modified_end_time: preservedFormData.endTime || undefined,
+        modified_category: preservedFormData.category || undefined,
+        modified_academy_id: academyId || undefined,
+        del_yn: false,
+    };
+
+    console.log('💾 Exception data to save with preserved data:', {
+        ...exceptionData,
+        hasTitle: !!exceptionData.modified_title,
+        hasStartTime: !!exceptionData.modified_start_time,
+        hasEndTime: !!exceptionData.modified_end_time,
+        hasCategory: !!exceptionData.modified_category,
+        hasAcademyId: !!exceptionData.modified_academy_id
+    });
+
+    try {
+        const exceptionId = await DatabaseService.createRecurringException(exceptionData);
+        console.log('✅ Exception created/updated with ID:', exceptionId);
+    } catch (error) {
+        console.error('❌ Error saving exception with preserved data:', error);
+        throw error;
+    }
+    }, [event, selectedDate, scheduleId]);
+
+    // ✅ 전체 반복 시리즈 업데이트도 보존된 데이터 사용
+    const updateEntireRecurringSeriesWithData = useCallback(async (preservedFormData: EventFormData) => {
+    if (!event?.id) return;
+
+    console.log('🔄 Updating entire recurring series with preserved data:', event.id, {
+        preservedData: {
+        title: preservedFormData.title,
+        startTime: preservedFormData.startTime,
+        endTime: preservedFormData.endTime,
+        category: preservedFormData.category
+        }
+    });
+
+    const eventTitle = preservedFormData.category === '학원' ? preservedFormData.academyName : preservedFormData.title;
+    let academyId: number | undefined = preservedFormData.selectedAcademy?.id;
+    
+    if (preservedFormData.category === '학원' && eventTitle?.trim()) {
+        academyId = await DatabaseService.createAcademyForRecurringEvent(
+        eventTitle.trim(),
+        preservedFormData.selectedSubject,
+        scheduleId
+        );
+    }
+
+    const updatedEvent: Event = {
+        ...event,
+        title: eventTitle?.trim() || event.title,
+        start_time: preservedFormData.startTime || event.start_time,
+        end_time: preservedFormData.endTime || event.end_time,
+        category: preservedFormData.category || event.category,
+        academy_id: academyId,
+        event_date: selectedDate,
+    };
+
+    await DatabaseService.updateEvent(updatedEvent);
+    console.log('✅ Recurring series updated successfully with preserved data');
+    }, [event, selectedDate, scheduleId]);
 
   // 반복 일정 편집 확인 처리
   const handleRecurringEditConfirm = useCallback(async (editType: 'this_only' | 'all_future') => {
-    console.log('🔄 Recurring edit confirm:', editType);
+  console.log('🔄 Recurring edit confirm:', editType);
+  
+  // ✅ 현재 폼 데이터를 저장해서 보존
+  const currentFormData = { ...formData };
+    console.log('💾 Preserving current form data:', {
+        title: currentFormData.title,
+        startTime: currentFormData.startTime,
+        endTime: currentFormData.endTime,
+        category: currentFormData.category,
+        academyName: currentFormData.academyName
+    });
     
     setUIState(prev => ({ 
-      ...prev, 
-      showRecurringEditModal: false,
-      isLoading: true 
+        ...prev, 
+        showRecurringEditModal: false,
+        isLoading: true 
     }));
 
     try {
-      if (editType === 'this_only') {
-        console.log('🔄 Saving as exception');
-        await saveAsException();
-      } else {
-        console.log('🔄 Updating entire recurring series');
-        await updateEntireRecurringSeries();
-      }
+        if (editType === 'this_only') {
+        console.log('🔄 Saving as exception with preserved data');
+        await saveAsExceptionWithData(currentFormData);
+        } else {
+        console.log('🔄 Updating entire recurring series with preserved data');
+        await updateEntireRecurringSeriesWithData(currentFormData);
+        }
 
-      console.log('✅ Recurring edit completed');
-      finishSave();
-      
+        console.log('✅ Recurring edit completed');
+        finishSave();
+        
     } catch (error) {
-      console.error('❌ Error in recurring edit:', error);
-      Alert.alert('오류', '반복 일정 수정 중 오류가 발생했습니다.');
+        console.error('❌ Error in recurring edit:', error);
+        Alert.alert('오류', '반복 일정 수정 중 오류가 발생했습니다.');
     } finally {
-      setUIState(prev => ({ ...prev, isLoading: false }));
+        setUIState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [finishSave]);
+    }, [formData, finishSave]);
 
-  // 반복 일정 삭제 확인 처리
+  // ✅ 반복 일정 삭제 확인 처리 개선 - null 체크 추가
   const handleRecurringDeleteConfirm = useCallback(async (deleteType: 'this_only' | 'all_future' | 'restore') => {
-    console.log('🔄 Recurring delete confirm:', deleteType);
+    console.log('🔄 Recurring delete confirm:', deleteType, {
+        eventId: event?.id,
+        selectedDate,
+        currentException: currentException?.id,
+        isEditingException: uiState.isEditingException
+    });
     
     setUIState(prev => ({ 
-      ...prev, 
-      showRecurringDeleteModal: false,
-      isLoading: true 
+        ...prev, 
+        showRecurringDeleteModal: false,
+        isLoading: true 
     }));
 
     try {
-      if (deleteType === 'this_only') {
-        console.log('this_only delete - Feature not implemented yet');
-      } else if (deleteType === 'all_future') {
+        if (deleteType === 'this_only') {
+        if (!event?.id || !selectedDate) return;
+        
+        console.log('🔄 Creating cancel exception for this date only');
+        await DatabaseService.createRecurringException({
+            recurring_event_id: event.id,
+            exception_date: selectedDate,
+            exception_type: 'cancel',
+            del_yn: false,
+        });
+        console.log('✅ Cancel exception created successfully');
+        
+        } else if (deleteType === 'all_future') {
         console.log('🔄 Deleting entire recurring event');
-        await DatabaseService.deleteRecurringEvent(event!.id!);
-      } else if (deleteType === 'restore') {
-        console.log('restore delete - Feature not implemented yet');
-      }
+        if (event?.id) {
+            await DatabaseService.deleteRecurringEvent(event.id);
+            console.log('✅ Entire recurring series deleted');
+        }
+        
+        } else if (deleteType === 'restore') {
+        // ✅ 예외 복원 로직 개선 - 더 안전한 방법
+        console.log('🔄 Restoring by removing exception');
+        
+        let exceptionToDelete: RecurringException | null = currentException;
+        
+        // currentException이 없는 경우 DB에서 직접 찾기
+        if (!exceptionToDelete && event?.id && selectedDate) {
+            console.log('🔍 No currentException, searching in DB...');
+            try {
+            const exceptions = await DatabaseService.getRecurringExceptions(
+                event.id, 
+                selectedDate, 
+                selectedDate
+            );
+            
+            if (exceptions.length > 0) {
+                exceptionToDelete = exceptions[0];
+                console.log('✅ Found exception in DB:', exceptionToDelete.id);
+            } else {
+                console.log('⚠️ No exception found in DB either');
+            }
+            } catch (error) {
+            console.error('❌ Error searching for exception:', error);
+            }
+        }
+        
+        if (exceptionToDelete) {
+            console.log('🔄 Deleting exception with ID:', exceptionToDelete.id);
+            await DatabaseService.deleteRecurringException(exceptionToDelete.id);
+            console.log('✅ Exception removed, recurring event date restored');
+            
+            // 상태 초기화
+            setCurrentException(null);
+            setUIState(prev => ({ ...prev, isEditingException: false }));
+        } else {
+            console.log('⚠️ No exception to restore');
+            Alert.alert('알림', '복원할 예외가 없습니다.');
+            return;
+        }
+        }
 
-      console.log('✅ Recurring delete completed');
-      finishSave();
-      
+        console.log('✅ Recurring delete completed');
+        finishSave();
+        
     } catch (error) {
-      console.error('❌ Error in recurring delete:', error);
-      Alert.alert('오류', '반복 일정 삭제 중 오류가 발생했습니다.');
+        console.error('❌ Error in recurring delete:', error);
+        Alert.alert('오류', '반복 일정 삭제 중 오류가 발생했습니다.');
     } finally {
-      setUIState(prev => ({ ...prev, isLoading: false }));
+        setUIState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [event, finishSave]);
+    }, [event, selectedDate, currentException, finishSave, uiState.isEditingException]);
 
-  // 예외로 저장
+  // ✅ 예외로 저장 개선
   const saveAsException = useCallback(async () => {
-    console.log('saveAsException - Feature not implemented yet');
-    await updateEntireRecurringSeries();
-  }, []);
+    const currentFormData = { ...formData };
+    console.log('🔄 saveAsException called, using current form data');
+    await saveAsExceptionWithData(currentFormData);
+    }, [formData, saveAsExceptionWithData]);
 
   // 전체 반복 시리즈 수정
   const updateEntireRecurringSeries = useCallback(async () => {
@@ -618,7 +1049,7 @@ export const useEventLogic = (
     console.log('✅ Recurring event saved successfully');
   }, [formData, selectedDate, scheduleId]);
 
-  // 삭제 처리
+  // ✅ 삭제 처리 개선
   const handleDelete = useCallback(async () => {
     if (!event?.id) return;
 
@@ -711,37 +1142,73 @@ export const useEventLogic = (
     setUIState(prev => ({ ...prev, showAcademyPicker: false }));
   }, [academies]);
 
-  // ✅ 시간 선택 핸들러들 - 개선된 버전
+  // ✅ 시간 선택 핸들러들
   const handleStartTimeConfirm = useCallback((value: string) => {
     console.log('⏰ Start time selected:', value);
+    console.log('📝 Current form data before update:', {
+        startTime: formData.startTime,
+        endTime: formData.endTime,
+        title: formData.title
+    });
     
     setFormData(prev => ({ ...prev, startTime: value }));
     
     // 종료 시간 자동 조정
     if (schedule) {
-      const calculatedEndTime = calculateEndTime(value, schedule);
-      
-      // 계산된 종료 시간이 유효한 시간 옵션에 있는지 확인
-      if (isValidTimeOption(calculatedEndTime, options.timeOptions)) {
+        const calculatedEndTime = calculateEndTime(value, schedule);
+        
+        if (isValidTimeOption(calculatedEndTime, options.timeOptions)) {
         setFormData(prev => ({ ...prev, endTime: calculatedEndTime }));
         console.log('✅ End time auto-set to:', calculatedEndTime);
-      } else {
-        // 유효하지 않은 경우 다음 유효한 시간 찾기
+        } else {
         const nextValidTime = findNextValidTime(value, options.timeOptions);
         
         if (nextValidTime) {
-          setFormData(prev => ({ ...prev, endTime: nextValidTime }));
-          console.log('✅ End time set to next valid time:', nextValidTime);
+            setFormData(prev => ({ ...prev, endTime: nextValidTime }));
+            console.log('✅ End time set to next valid time:', nextValidTime);
         } else {
-          console.log('⚠️ No valid end time found, keeping current end time');
+            console.log('⚠️ No valid end time found, keeping current end time');
         }
-      }
+        }
     }
-  }, [schedule, options.timeOptions]);
+    }, [schedule, options.timeOptions, formData]);
 
-  const handleEndTimeConfirm = useCallback((value: string) => {
-    console.log('⏰ End time selected:', value);
-    setFormData(prev => ({ ...prev, endTime: value }));
+    const handleEndTimeConfirm = useCallback((value: string) => {
+        console.log('⏰ End time selected:', value);
+        console.log('📝 Current form data before update:', {
+            startTime: formData.startTime,
+            endTime: formData.endTime,
+            title: formData.title
+        });
+        
+        setFormData(prev => ({ ...prev, endTime: value }));
+    }, [formData]);
+
+  // ✅ 카테고리 변경 핸들러
+  const handleCategoryChange = useCallback((newCategory: Event['category']) => {
+    setFormData(prev => ({
+      ...prev,
+      category: newCategory,
+      // 학원이 아닌 경우 학원 관련 데이터 초기화
+      ...(newCategory !== '학원' && {
+        academyName: '',
+        selectedSubject: '국어' as Academy['subject'],
+        selectedAcademy: null,
+      })
+    }));
+  }, []);
+
+  // ✅ 요일 토글 핸들러
+  const toggleDay = useCallback((dayKey: string) => {
+    setFormData(prev => {
+      const newSelectedDays = new Set(prev.selectedDays);
+      if (newSelectedDays.has(dayKey)) {
+        newSelectedDays.delete(dayKey);
+      } else {
+        newSelectedDays.add(dayKey);
+      }
+      return { ...prev, selectedDays: newSelectedDays };
+    });
   }, []);
 
   // 초기화
@@ -749,15 +1216,34 @@ export const useEventLogic = (
     loadInitialData();
   }, [loadInitialData]);
 
-  // 예외 편집 모드 설정
+  // ✅ 이벤트 데이터가 변경될 때 예외 상태 업데이트
   useEffect(() => {
     if (event && Boolean(event.is_recurring)) {
-      setUIState(prev => ({
+        // 이벤트 객체에 exception_id가 있으면 예외 편집 모드로 설정
+        const hasExceptionId = !!(event as any).exception_id;
+        console.log('🔍 Event exception check:', {
+        eventId: event.id,
+        hasExceptionId,
+        selectedDate
+        });
+        
+        setUIState(prev => ({
         ...prev,
-        isEditingException: !!(event as any).exception_id
-      }));
+        isEditingException: hasExceptionId
+        }));
+        
+        // exception_id가 있으면 해당 예외 데이터도 로드
+        if (hasExceptionId) {
+        loadExceptionData(event.id).then(exception => {
+            if (exception) {
+            console.log('✅ Exception data loaded from effect:', exception.id);
+            }
+        }).catch(error => {
+            console.error('❌ Error loading exception from effect:', error);
+        });
+        }
     }
-  }, [event]);
+    }, [event, selectedDate, loadExceptionData]);
 
   return {
     // 상태
@@ -767,6 +1253,7 @@ export const useEventLogic = (
     schedule,
     academies,
     isEditMode,
+    currentException,
     
     // 액션
     updateFormData,
@@ -778,6 +1265,8 @@ export const useEventLogic = (
     handleAcademySelect,
     handleStartTimeConfirm,
     handleEndTimeConfirm,
+    handleCategoryChange,
+    toggleDay,
     
     // 헬퍼
     sanitizeEventData,

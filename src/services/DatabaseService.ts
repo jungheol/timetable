@@ -852,6 +852,8 @@ class DatabaseService {
     try {
       const db = await this.ensureDbConnection();
       
+      console.log('🔍 Loading events with recurring support...');
+      
       // 1. 일반 일정 조회
       const regularEvents = await db.getAllAsync<any>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject
@@ -879,9 +881,14 @@ class DatabaseService {
         [scheduleId, endDate, startDate]
       );
       
-      // 3. 반복 일정을 날짜별로 확장 (예외 처리 포함)
+      console.log(`📝 Regular events: ${regularEvents.length}, Recurring patterns: ${recurringEvents.length}`);
+      
+      // 3. 반복 일정을 날짜별로 확장하고 예외 적용
       const expandedRecurringEvents: Event[] = [];
+      
       for (const recurringEvent of recurringEvents) {
+        console.log(`🔄 Processing recurring event: ${recurringEvent.title}`);
+        
         // 기본 날짜들 생성
         const dates = this.generateRecurringDates(recurringEvent, startDate, endDate);
         
@@ -890,16 +897,26 @@ class DatabaseService {
         const exceptionMap = new Map<string, RecurringException>();
         exceptions.forEach(ex => exceptionMap.set(ex.exception_date, ex));
         
+        console.log(`📅 Generated ${dates.length} dates, Found ${exceptions.length} exceptions`);
+        if (exceptions.length > 0) {
+          console.log('🔍 Exception details:', exceptions.map(ex => ({
+            date: ex.exception_date,
+            type: ex.exception_type,
+            hasModifications: !!(ex.modified_title || ex.modified_start_time || ex.modified_end_time)
+          })));
+        }
+        
         for (const date of dates) {
           const exception = exceptionMap.get(date);
           
           if (exception && exception.exception_type === 'cancel') {
             // 취소된 날짜는 건너뛰기
+            console.log(`❌ Skipping cancelled date: ${date}`);
             continue;
           }
           
-          // 기본 이벤트 생성 (✅ 정제 로직 적용)
-          const eventForDate: Event = this.sanitizeEventData({
+          // 기본 이벤트 생성
+          let eventForDate: Event = this.sanitizeEventData({
             id: recurringEvent.id,
             schedule_id: recurringEvent.schedule_id,
             title: recurringEvent.title,
@@ -917,37 +934,160 @@ class DatabaseService {
             academy_subject: recurringEvent.academy_subject,
           });
           
-          // 수정 예외가 있는 경우 적용
+          // ✅ 수정 예외가 있는 경우 적용 - 개선된 로직
           if (exception && exception.exception_type === 'modify') {
-            if (exception.modified_title) eventForDate.title = exception.modified_title;
-            if (exception.modified_start_time) eventForDate.start_time = exception.modified_start_time;
-            if (exception.modified_end_time) eventForDate.end_time = exception.modified_end_time;
-            if (exception.modified_category) eventForDate.category = exception.modified_category;
-            if (exception.modified_academy_id) {
-              eventForDate.academy_id = exception.modified_academy_id;
+            console.log(`✏️ Applying exception for ${date}:`, {
+              exceptionId: exception.id,
+              originalData: {
+                title: eventForDate.title,
+                startTime: eventForDate.start_time,
+                endTime: eventForDate.end_time,
+                category: eventForDate.category,
+                academyId: eventForDate.academy_id
+              },
+              modificationData: {
+                title: exception.modified_title,
+                startTime: exception.modified_start_time,
+                endTime: exception.modified_end_time,
+                category: exception.modified_category,
+                academyId: exception.modified_academy_id
+              }
+            });
+            
+            // ✅ null, undefined, 빈 문자열을 모두 체크하여 수정된 값들 적용
+            if (exception.modified_title !== null && exception.modified_title !== undefined && exception.modified_title.trim() !== '') {
+              const oldTitle = eventForDate.title;
+              eventForDate.title = exception.modified_title;
+              console.log(`   📝 Title updated: "${oldTitle}" → "${exception.modified_title}"`);
+            } else {
+              console.log(`   📝 Title unchanged: "${eventForDate.title}" (no valid modification)`);
             }
+            
+            if (exception.modified_start_time !== null && exception.modified_start_time !== undefined && exception.modified_start_time.trim() !== '') {
+              const oldStartTime = eventForDate.start_time;
+              eventForDate.start_time = exception.modified_start_time;
+              console.log(`   ⏰ Start time updated: "${oldStartTime}" → "${exception.modified_start_time}"`);
+            } else {
+              console.log(`   ⏰ Start time unchanged: "${eventForDate.start_time}" (no valid modification)`);
+            }
+            
+            if (exception.modified_end_time !== null && exception.modified_end_time !== undefined && exception.modified_end_time.trim() !== '') {
+              const oldEndTime = eventForDate.end_time;
+              eventForDate.end_time = exception.modified_end_time;
+              console.log(`   ⏰ End time updated: "${oldEndTime}" → "${exception.modified_end_time}"`);
+            } else {
+              console.log(`   ⏰ End time unchanged: "${eventForDate.end_time}" (no valid modification)`);
+            }
+            
+            if (exception.modified_category !== null && exception.modified_category !== undefined && exception.modified_category.trim() !== '') {
+              const oldCategory = eventForDate.category;
+              eventForDate.category = exception.modified_category;
+              console.log(`   📂 Category updated: "${oldCategory}" → "${exception.modified_category}"`);
+            } else {
+              console.log(`   📂 Category unchanged: "${eventForDate.category}" (no valid modification)`);
+            }
+            
+            if (exception.modified_academy_id !== null && exception.modified_academy_id !== undefined) {
+              const previousAcademyId = eventForDate.academy_id;
+              eventForDate.academy_id = exception.modified_academy_id;
+              console.log(`   🏫 Academy ID updated: ${previousAcademyId} → ${exception.modified_academy_id}`);
+              
+              // ✅ 수정된 학원 정보 로드 - 에러 처리 강화
+              try {
+                const modifiedAcademy = await this.getAcademyById(exception.modified_academy_id);
+                if (modifiedAcademy) {
+                  (eventForDate as any).academy_name = modifiedAcademy.name;
+                  (eventForDate as any).academy_subject = modifiedAcademy.subject;
+                  console.log(`   ✅ Academy info loaded: ${modifiedAcademy.name} (${modifiedAcademy.subject})`);
+                } else {
+                  console.warn(`   ⚠️ Academy ${exception.modified_academy_id} not found, keeping original info`);
+                  // 원본 학원 정보 유지
+                  (eventForDate as any).academy_name = recurringEvent.academy_name;
+                  (eventForDate as any).academy_subject = recurringEvent.academy_subject;
+                }
+              } catch (academyError) {
+                console.error(`   ❌ Failed to load modified academy info for ID ${exception.modified_academy_id}:`, academyError);
+                // 에러 발생 시 원본 학원 정보 유지
+                (eventForDate as any).academy_name = recurringEvent.academy_name;
+                (eventForDate as any).academy_subject = recurringEvent.academy_subject;
+              }
+            } else {
+              console.log(`   🏫 Academy unchanged: ID ${eventForDate.academy_id} (no valid modification)`);
+            }
+            
             // 예외 ID를 특별히 표시 (UI에서 구분용)
             (eventForDate as any).exception_id = exception.id;
+            (eventForDate as any).exception_type = exception.exception_type;
+            
+            console.log(`✅ Exception applied successfully for ${date}:`, {
+              finalData: {
+                title: eventForDate.title,
+                startTime: eventForDate.start_time,
+                endTime: eventForDate.end_time,
+                category: eventForDate.category,
+                academyId: eventForDate.academy_id
+              },
+              exceptionId: (eventForDate as any).exception_id
+            });
           }
           
           expandedRecurringEvents.push(eventForDate);
         }
       }
       
-      // ✅ 일반 이벤트도 정제 로직 적용
+      // 4. 모든 이벤트 합치기
       const sanitizedRegularEvents = this.sanitizeEventArray(regularEvents);
-      
       const allEvents = [...sanitizedRegularEvents, ...expandedRecurringEvents];
-      return allEvents.sort((a, b) => {
+      
+      console.log(`📋 Final event summary:`, {
+        regular: sanitizedRegularEvents.length,
+        recurring: expandedRecurringEvents.length,
+        total: allEvents.length,
+        exceptions: allEvents.filter(e => !!(e as any).exception_id).length
+      });
+      
+      // 5. 중복 제거 및 정렬
+      const uniqueEvents = this.removeDuplicateEvents(allEvents);
+      
+      return uniqueEvents.sort((a, b) => {
         if (a.event_date !== b.event_date) {
-          return a.event_date!.localeCompare(b.event_date!);
+          return (a.event_date || '').localeCompare(b.event_date || '');
         }
         return a.start_time.localeCompare(b.start_time);
       });
+      
     } catch (error) {
-      console.error('Error getting events with recurring:', error);
+      console.error('❌ Error getting events with recurring:', error);
       throw error;
     }
+  }
+
+  // ✅ 중복 이벤트 제거 메서드 추가
+  private removeDuplicateEvents(events: Event[]): Event[] {
+    const uniqueEvents = new Map<string, Event>();
+    
+    for (const event of events) {
+      // 중복 키 생성: 날짜_시작시간_제목_카테고리
+      const key = `${event.event_date}_${event.start_time}_${event.title}_${event.category}`;
+      
+      // 이미 있는 이벤트인 경우, 예외가 있는 것을 우선
+      const existing = uniqueEvents.get(key);
+      if (existing) {
+        const hasException = !!(event as any).exception_id;
+        const existingHasException = !!(existing as any).exception_id;
+        
+        if (hasException && !existingHasException) {
+          // 새 이벤트가 예외고 기존이 일반이면 새 것을 사용
+          uniqueEvents.set(key, event);
+          console.log(`🔄 Replaced regular event with exception for ${key}`);
+        }
+        // 그 외의 경우는 기존 것을 유지
+      } else {
+        uniqueEvents.set(key, event);
+      }
+    }
+    
+    return Array.from(uniqueEvents.values());
   }
 
   // 반복 일정의 날짜들 생성
@@ -1213,6 +1353,68 @@ class DatabaseService {
   async createRecurringException(exception: Omit<RecurringException, 'id' | 'created_at' | 'updated_at'>): Promise<number> {
     try {
       const db = await this.ensureDbConnection();
+      
+      console.log('🔄 Creating recurring exception with full data:', {
+        eventId: exception.recurring_event_id,
+        date: exception.exception_date,
+        type: exception.exception_type,
+        modifications: {
+          title: exception.modified_title,
+          startTime: exception.modified_start_time,
+          endTime: exception.modified_end_time,
+          category: exception.modified_category,
+          academyId: exception.modified_academy_id
+        },
+        hasModifications: !!(
+          exception.modified_title || 
+          exception.modified_start_time || 
+          exception.modified_end_time || 
+          exception.modified_category || 
+          exception.modified_academy_id
+        )
+      });
+      
+      // ✅ 기존 예외가 있는지 먼저 확인
+      const existingException = await db.getFirstAsync<any>(
+        'SELECT * FROM recurring_exceptions WHERE recurring_event_id = ? AND exception_date = ? AND del_yn = 0',
+        [exception.recurring_event_id, exception.exception_date]
+      );
+      
+      if (existingException) {
+        console.log('⚠️ Exception already exists, updating instead of creating');
+        console.log('📊 Existing exception data:', existingException);
+        
+        // 기존 예외 업데이트
+        await db.runAsync(
+          `UPDATE recurring_exceptions SET 
+          exception_type = ?, modified_title = ?, modified_start_time = ?, 
+          modified_end_time = ?, modified_category = ?, modified_academy_id = ?,
+          updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?`,
+          [
+            exception.exception_type,
+            exception.modified_title ?? null,
+            exception.modified_start_time ?? null,
+            exception.modified_end_time ?? null,
+            exception.modified_category ?? null,
+            exception.modified_academy_id ?? null,
+            existingException.id
+          ]
+        );
+        
+        console.log('✅ Exception updated successfully');
+        
+        // 업데이트된 데이터 확인
+        const updatedException = await db.getFirstAsync<any>(
+          'SELECT * FROM recurring_exceptions WHERE id = ?',
+          [existingException.id]
+        );
+        console.log('📊 Updated exception data:', updatedException);
+        
+        return existingException.id;
+      }
+      
+      // 새 예외 생성
       const result = await db.runAsync(
         `INSERT INTO recurring_exceptions (
           recurring_event_id, exception_date, exception_type,
@@ -1230,9 +1432,19 @@ class DatabaseService {
           exception.modified_academy_id ?? null,
         ]
       );
+      
+      console.log('✅ Exception created with ID:', result.lastInsertRowId);
+      
+      // 생성된 데이터 확인
+      const createdException = await db.getFirstAsync<any>(
+        'SELECT * FROM recurring_exceptions WHERE id = ?',
+        [result.lastInsertRowId]
+      );
+      console.log('📊 Created exception data:', createdException);
+      
       return result.lastInsertRowId;
     } catch (error) {
-      console.error('Error creating recurring exception:', error);
+      console.error('❌ Error creating recurring exception:', error);
       throw error;
     }
   }
@@ -1260,6 +1472,21 @@ class DatabaseService {
   async updateRecurringException(exception: RecurringException): Promise<void> {
     try {
       const db = await this.ensureDbConnection();
+      
+      console.log('🔄 Updating recurring exception:', {
+        id: exception.id,
+        eventId: exception.recurring_event_id,
+        date: exception.exception_date,
+        type: exception.exception_type,
+        modifications: {
+          title: exception.modified_title,
+          startTime: exception.modified_start_time,
+          endTime: exception.modified_end_time,
+          category: exception.modified_category,
+          academyId: exception.modified_academy_id
+        }
+      });
+      
       await db.runAsync(
         `UPDATE recurring_exceptions SET 
         exception_type = ?, modified_title = ?, modified_start_time = ?, 
@@ -1276,8 +1503,10 @@ class DatabaseService {
           exception.id
         ]
       );
+      
+      console.log('✅ Exception updated successfully');
     } catch (error) {
-      console.error('Error updating recurring exception:', error);
+      console.error('❌ Error updating recurring exception:', error);
       throw error;
     }
   }
