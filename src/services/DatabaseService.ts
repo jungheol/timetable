@@ -133,6 +133,78 @@ class DatabaseService {
     this.initDatabase();
   }
 
+  // ✅ Boolean 데이터 정제 메서드들 추가
+  private sanitizeScheduleData(rawData: any): Schedule {
+    return {
+      ...rawData,
+      show_weekend: Boolean(rawData.show_weekend),
+      is_active: Boolean(rawData.is_active),
+      del_yn: Boolean(rawData.del_yn),
+    };
+  }
+
+  private sanitizeEventData(rawData: any): Event {
+    return {
+      ...rawData,
+      is_recurring: Boolean(rawData.is_recurring),
+      del_yn: Boolean(rawData.del_yn),
+    };
+  }
+
+  private sanitizeAcademyData(rawData: any): Academy {
+    return {
+      ...rawData,
+      provides_vehicle: Boolean(rawData.provides_vehicle),
+      del_yn: Boolean(rawData.del_yn),
+    };
+  }
+
+  private sanitizeRecurringPatternData(rawData: any): RecurringPattern {
+    return {
+      ...rawData,
+      monday: Boolean(rawData.monday),
+      tuesday: Boolean(rawData.tuesday),
+      wednesday: Boolean(rawData.wednesday),
+      thursday: Boolean(rawData.thursday),
+      friday: Boolean(rawData.friday),
+      saturday: Boolean(rawData.saturday),
+      sunday: Boolean(rawData.sunday),
+      del_yn: Boolean(rawData.del_yn),
+    };
+  }
+
+  private sanitizeRecurringExceptionData(rawData: any): RecurringException {
+    return {
+      ...rawData,
+      del_yn: Boolean(rawData.del_yn),
+    };
+  }
+
+  private sanitizeHolidayData(rawData: any): Holiday {
+    return {
+      ...rawData,
+      is_holiday: Boolean(rawData.is_holiday),
+      del_yn: Boolean(rawData.del_yn),
+    };
+  }
+
+  // ✅ 배열 정제 메서드들
+  private sanitizeScheduleArray(rawArray: any[]): Schedule[] {
+    return rawArray.map(item => this.sanitizeScheduleData(item));
+  }
+
+  private sanitizeEventArray(rawArray: any[]): Event[] {
+    return rawArray.map(item => this.sanitizeEventData(item));
+  }
+
+  private sanitizeAcademyArray(rawArray: any[]): Academy[] {
+    return rawArray.map(item => this.sanitizeAcademyData(item));
+  }
+
+  private sanitizeHolidayArray(rawArray: any[]): Holiday[] {
+    return rawArray.map(item => this.sanitizeHolidayData(item));
+  }
+
   private async initDatabase() {
     try {
       this.db = await SQLite.openDatabaseAsync('student_schedule.db');
@@ -145,6 +217,7 @@ class DatabaseService {
         await this.db.execAsync(`DROP TABLE IF EXISTS recurring_patterns;`);
         await this.db.execAsync(`DROP TABLE IF EXISTS schedules;`);
         await this.db.execAsync(`DROP TABLE IF EXISTS holidays;`);
+        await this.db.execAsync(`DROP TABLE IF EXISTS recurring_exceptions;`);
         console.log('✅ All tables dropped');
       }
       
@@ -313,14 +386,14 @@ class DatabaseService {
     return this.db;
   }
 
-  // 일정표 관리
+  // 일정표 관리 (✅ 정제 로직 적용)
   async getActiveSchedule(): Promise<Schedule | null> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getFirstAsync<Schedule>(
+      const result = await db.getFirstAsync<any>(
         'SELECT * FROM schedules WHERE is_active = 1 AND del_yn = 0 LIMIT 1'
       );
-      return result || null;
+      return result ? this.sanitizeScheduleData(result) : null;
     } catch (error) {
       console.error('Error getting active schedule:', error);
       throw error;
@@ -368,19 +441,12 @@ class DatabaseService {
           schedule.end_time, 
           schedule.show_weekend ? 1 : 0,
           schedule.time_unit || '1hour',
-          schedule.is_active ? 1 : 0,  // ✅ is_active 추가!
+          schedule.is_active ? 1 : 0,
           schedule.id
         ]
       );
       
       console.log('✅ [DB] Schedule updated successfully');
-      
-      // 업데이트 후 확인
-      const updatedSchedule = await db.getFirstAsync<Schedule>(
-        'SELECT * FROM schedules WHERE id = ?',
-        [schedule.id]
-      );
-      console.log('🔍 [DB] Updated schedule verification:', updatedSchedule);
       
     } catch (error) {
       console.error('❌ [DB] Error updating schedule:', error);
@@ -388,98 +454,100 @@ class DatabaseService {
     }
   }
 
-  // 모든 스케줄 조회 (삭제되지 않은 것만)
-async getAllSchedules(): Promise<Schedule[]> {
-  try {
-    const db = await this.ensureDbConnection();
-    const result = await db.getAllAsync<Schedule>(
-      'SELECT * FROM schedules WHERE del_yn = 0 ORDER BY created_at DESC'
-    );
-    return result;
-  } catch (error) {
-    console.error('Error getting all schedules:', error);
-    throw error;
-  }
-}
-
-async getScheduleById(id: number): Promise<Schedule | null> {
-  try {
-    const db = await this.ensureDbConnection();
-    const result = await db.getFirstAsync<Schedule>(
-      'SELECT * FROM schedules WHERE id = ? AND del_yn = 0',
-      [id]
-    );
-    return result || null;
-  } catch (error) {
-    console.error('Error getting schedule by id:', error);
-    throw error;
-  }
-}
-
-// 특정 스케줄을 활성화하고 다른 스케줄들을 비활성화
-async setActiveSchedule(scheduleId: number): Promise<void> {
-  try {
-    const db = await this.ensureDbConnection();
-    
-    // 먼저 모든 스케줄을 비활성화
-    await db.runAsync('UPDATE schedules SET is_active = 0 WHERE del_yn = 0');
-    
-    // 선택한 스케줄만 활성화
-    await db.runAsync('UPDATE schedules SET is_active = 1 WHERE id = ? AND del_yn = 0', [scheduleId]);
-    
-    console.log(`✅ Schedule ${scheduleId} set as active`);
-  } catch (error) {
-    console.error('Error setting active schedule:', error);
-    throw error;
-  }
-}
-
-// 스케줄 삭제 (논리적 삭제)
-async deleteSchedule(id: number): Promise<void> {
-  try {
-    const db = await this.ensureDbConnection();
-    
-    // 삭제하려는 스케줄이 활성 스케줄인지 확인
-    const scheduleToDelete = await db.getFirstAsync<Schedule>(
-      'SELECT * FROM schedules WHERE id = ? AND del_yn = 0',
-      [id]
-    );
-    
-    if (!scheduleToDelete) {
-      throw new Error('Schedule not found');
+  // ✅ 모든 스케줄 조회 (정제 로직 적용)
+  async getAllSchedules(): Promise<Schedule[]> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getAllAsync<any>(
+        'SELECT * FROM schedules WHERE del_yn = 0 ORDER BY created_at DESC'
+      );
+      return this.sanitizeScheduleArray(result);
+    } catch (error) {
+      console.error('Error getting all schedules:', error);
+      throw error;
     }
-    
-    // 스케줄을 논리적으로 삭제
-    await db.runAsync('UPDATE schedules SET del_yn = 1 WHERE id = ?', [id]);
-    
-    // 만약 삭제된 스케줄이 활성 스케줄이었다면, 다른 스케줄을 활성화
-    if (scheduleToDelete.is_active) {
-      const remainingSchedules = await db.getAllAsync<Schedule>(
-        'SELECT * FROM schedules WHERE del_yn = 0 ORDER BY created_at DESC LIMIT 1'
+  }
+
+  async getScheduleById(id: number): Promise<Schedule | null> {
+    try {
+      const db = await this.ensureDbConnection();
+      const result = await db.getFirstAsync<any>(
+        'SELECT * FROM schedules WHERE id = ? AND del_yn = 0',
+        [id]
+      );
+      return result ? this.sanitizeScheduleData(result) : null;
+    } catch (error) {
+      console.error('Error getting schedule by id:', error);
+      throw error;
+    }
+  }
+
+  // 특정 스케줄을 활성화하고 다른 스케줄들을 비활성화
+  async setActiveSchedule(scheduleId: number): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 먼저 모든 스케줄을 비활성화
+      await db.runAsync('UPDATE schedules SET is_active = 0 WHERE del_yn = 0');
+      
+      // 선택한 스케줄만 활성화
+      await db.runAsync('UPDATE schedules SET is_active = 1 WHERE id = ? AND del_yn = 0', [scheduleId]);
+      
+      console.log(`✅ Schedule ${scheduleId} set as active`);
+    } catch (error) {
+      console.error('Error setting active schedule:', error);
+      throw error;
+    }
+  }
+
+  // 스케줄 삭제 (논리적 삭제)
+  async deleteSchedule(id: number): Promise<void> {
+    try {
+      const db = await this.ensureDbConnection();
+      
+      // 삭제하려는 스케줄이 활성 스케줄인지 확인
+      const scheduleToDelete = await db.getFirstAsync<any>(
+        'SELECT * FROM schedules WHERE id = ? AND del_yn = 0',
+        [id]
       );
       
-      if (remainingSchedules.length > 0) {
-        await db.runAsync('UPDATE schedules SET is_active = 1 WHERE id = ?', [remainingSchedules[0].id]);
-        console.log(`✅ Activated schedule ${remainingSchedules[0].id} after deletion`);
+      if (!scheduleToDelete) {
+        throw new Error('Schedule not found');
       }
+      
+      const sanitizedSchedule = this.sanitizeScheduleData(scheduleToDelete);
+      
+      // 스케줄을 논리적으로 삭제
+      await db.runAsync('UPDATE schedules SET del_yn = 1 WHERE id = ?', [id]);
+      
+      // 만약 삭제된 스케줄이 활성 스케줄이었다면, 다른 스케줄을 활성화
+      if (sanitizedSchedule.is_active) {
+        const remainingSchedules = await db.getAllAsync<any>(
+          'SELECT * FROM schedules WHERE del_yn = 0 ORDER BY created_at DESC LIMIT 1'
+        );
+        
+        if (remainingSchedules.length > 0) {
+          await db.runAsync('UPDATE schedules SET is_active = 1 WHERE id = ?', [remainingSchedules[0].id]);
+          console.log(`✅ Activated schedule ${remainingSchedules[0].id} after deletion`);
+        }
+      }
+      
+      console.log(`✅ Schedule ${id} deleted`);
+    } catch (error) {
+      console.error('Error deleting schedule:', error);
+      throw error;
     }
-    
-    console.log(`✅ Schedule ${id} deleted`);
-  } catch (error) {
-    console.error('Error deleting schedule:', error);
-    throw error;
   }
-}
 
-  // 학원 관리
+  // ✅ 학원 관리 (정제 로직 적용)
   async getAcademiesBySchedule(scheduleId: number): Promise<Academy[]> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getAllAsync<Academy>(
+      const result = await db.getAllAsync<any>(
         'SELECT * FROM academies WHERE schedule_id = ? AND del_yn = 0 ORDER BY created_at DESC',
         [scheduleId]
       );
-      return result;
+      return this.sanitizeAcademyArray(result);
     } catch (error) {
       console.error('Error getting academies by schedule:', error);
       throw error;
@@ -489,10 +557,10 @@ async deleteSchedule(id: number): Promise<void> {
   async getAcademies(): Promise<Academy[]> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getAllAsync<Academy>(
+      const result = await db.getAllAsync<any>(
         'SELECT * FROM academies WHERE del_yn = 0 ORDER BY created_at DESC'
       );
-      return result;
+      return this.sanitizeAcademyArray(result);
     } catch (error) {
       console.error('Error getting academies:', error);
       throw error;
@@ -585,11 +653,11 @@ async deleteSchedule(id: number): Promise<void> {
     }
   }
 
-  // 일정 관리
+  // ✅ 일정 관리 (정제 로직 적용)
   async getEvents(scheduleId: number, startDate: string, endDate: string): Promise<Event[]> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getAllAsync<Event>(
+      const result = await db.getAllAsync<any>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject
          FROM events e
          LEFT JOIN academies a ON e.academy_id = a.id
@@ -599,7 +667,7 @@ async deleteSchedule(id: number): Promise<void> {
          ORDER BY e.start_time`,
         [scheduleId, startDate, endDate]
       );
-      return result;
+      return this.sanitizeEventArray(result);
     } catch (error) {
       console.error('Error getting events:', error);
       throw error;
@@ -610,7 +678,7 @@ async deleteSchedule(id: number): Promise<void> {
     try {
       const db = await this.ensureDbConnection();
       
-      console.log('Creating event:', event); // 디버깅용
+      console.log('Creating event:', event);
       
       const result = await db.runAsync(
         `INSERT INTO events (
@@ -630,7 +698,7 @@ async deleteSchedule(id: number): Promise<void> {
         ]
       );
       
-      console.log('Event created with ID:', result.lastInsertRowId); // 디버깅용
+      console.log('Event created with ID:', result.lastInsertRowId);
       return result.lastInsertRowId;
     } catch (error) {
       console.error('Error creating event:', error);
@@ -751,7 +819,7 @@ async deleteSchedule(id: number): Promise<void> {
       console.log('Creating/finding academy:', academyName, subject, 'for schedule:', scheduleId);
       
       // 동일한 스케줄에서 동일한 이름과 과목의 학원이 있는지 확인
-      const existingAcademy = await db.getFirstAsync<Academy>(
+      const existingAcademy = await db.getFirstAsync<any>(
         'SELECT * FROM academies WHERE schedule_id = ? AND name = ? AND subject = ? AND del_yn = 0',
         [scheduleId, academyName, subject]
       );
@@ -775,7 +843,7 @@ async deleteSchedule(id: number): Promise<void> {
     }
   }
 
-  // 개선된 이벤트 조회 (반복 일정 확장 포함)
+  // ✅ 개선된 이벤트 조회 (반복 일정 확장 포함 + 정제 로직)
   async getEventsWithRecurring(
     scheduleId: number, 
     startDate: string, 
@@ -784,8 +852,8 @@ async deleteSchedule(id: number): Promise<void> {
     try {
       const db = await this.ensureDbConnection();
       
-      // 1. 일반 일정 조회 (기존과 동일)
-      const regularEvents = await db.getAllAsync<Event>(
+      // 1. 일반 일정 조회
+      const regularEvents = await db.getAllAsync<any>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject
         FROM events e
         LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
@@ -795,7 +863,7 @@ async deleteSchedule(id: number): Promise<void> {
         [scheduleId, startDate, endDate]
       );
       
-      // 2. 반복 일정 조회 (기존과 동일)
+      // 2. 반복 일정 조회
       const recurringEvents = await db.getAllAsync<any>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject, 
                 rp.monday, rp.tuesday, rp.wednesday, rp.thursday, 
@@ -830,8 +898,8 @@ async deleteSchedule(id: number): Promise<void> {
             continue;
           }
           
-          // 기본 이벤트 생성
-          const eventForDate: Event = {
+          // 기본 이벤트 생성 (✅ 정제 로직 적용)
+          const eventForDate: Event = this.sanitizeEventData({
             id: recurringEvent.id,
             schedule_id: recurringEvent.schedule_id,
             title: recurringEvent.title,
@@ -847,7 +915,7 @@ async deleteSchedule(id: number): Promise<void> {
             del_yn: recurringEvent.del_yn,
             academy_name: recurringEvent.academy_name,
             academy_subject: recurringEvent.academy_subject,
-          } as any;
+          });
           
           // 수정 예외가 있는 경우 적용
           if (exception && exception.exception_type === 'modify') {
@@ -857,7 +925,6 @@ async deleteSchedule(id: number): Promise<void> {
             if (exception.modified_category) eventForDate.category = exception.modified_category;
             if (exception.modified_academy_id) {
               eventForDate.academy_id = exception.modified_academy_id;
-              // 수정된 학원 정보도 가져와야 함 (최적화 가능)
             }
             // 예외 ID를 특별히 표시 (UI에서 구분용)
             (eventForDate as any).exception_id = exception.id;
@@ -867,7 +934,10 @@ async deleteSchedule(id: number): Promise<void> {
         }
       }
       
-      const allEvents = [...regularEvents, ...expandedRecurringEvents];
+      // ✅ 일반 이벤트도 정제 로직 적용
+      const sanitizedRegularEvents = this.sanitizeEventArray(regularEvents);
+      
+      const allEvents = [...sanitizedRegularEvents, ...expandedRecurringEvents];
       return allEvents.sort((a, b) => {
         if (a.event_date !== b.event_date) {
           return a.event_date!.localeCompare(b.event_date!);
@@ -889,7 +959,6 @@ async deleteSchedule(id: number): Promise<void> {
     const dates: string[] = [];
     
     try {
-      // moment가 import 되어 있지 않을 수 있으므로 Date 객체 사용
       const start = new Date(startDate);
       const end = new Date(endDate);
       const patternStart = new Date(recurringEvent.start_date);
@@ -898,22 +967,11 @@ async deleteSchedule(id: number): Promise<void> {
       // 시작일을 조정 (패턴 시작일 이후부터)
       let current = new Date(Math.max(start.getTime(), patternStart.getTime()));
       
-      console.log('Generating dates from', current.toISOString().split('T')[0], 'to', end.toISOString().split('T')[0]); // 디버깅용
-      console.log('Pattern days:', {
-        sunday: recurringEvent.sunday,
-        monday: recurringEvent.monday,
-        tuesday: recurringEvent.tuesday,
-        wednesday: recurringEvent.wednesday,
-        thursday: recurringEvent.thursday,
-        friday: recurringEvent.friday,
-        saturday: recurringEvent.saturday
-      }); // 디버깅용
-      
       while (current <= end) {
         const dayOfWeek = current.getDay(); // 0=일요일, 1=월요일, ..., 6=토요일
         let shouldInclude = false;
         
-        // 요일 확인
+        // 요일 확인 (✅ Boolean 타입 정제)
         switch (dayOfWeek) {
           case 0: shouldInclude = Boolean(recurringEvent.sunday); break;
           case 1: shouldInclude = Boolean(recurringEvent.monday); break;
@@ -937,8 +995,6 @@ async deleteSchedule(id: number): Promise<void> {
         // 다음 날로 이동
         current.setDate(current.getDate() + 1);
       }
-      
-      console.log('Generated dates:', dates); // 디버깅용
       
     } catch (error) {
       console.error('Error generating recurring dates:', error);
@@ -981,22 +1037,24 @@ async deleteSchedule(id: number): Promise<void> {
     try {
       const db = await this.ensureDbConnection();
       
-      console.log('Deleting recurring event:', eventId); // 디버깅용
+      console.log('Deleting recurring event:', eventId);
       
-      // 이벤트 정보 조회
-      const event = await db.getFirstAsync<Event>(
+      // 이벤트 정보 조회 (✅ 정제 로직 적용)
+      const eventResult = await db.getFirstAsync<any>(
         'SELECT * FROM events WHERE id = ? AND del_yn = 0',
         [eventId]
       );
       
-      if (!event) {
+      if (!eventResult) {
         throw new Error('Event not found');
       }
       
-      console.log('Found event to delete:', event); // 디버깅용
+      const event = this.sanitizeEventData(eventResult);
+      
+      console.log('Found event to delete:', event);
       
       if (event.is_recurring && event.recurring_group_id) {
-        console.log('Deleting recurring pattern:', event.recurring_group_id); // 디버깅용
+        console.log('Deleting recurring pattern:', event.recurring_group_id);
         
         // 반복 패턴 삭제
         await db.runAsync(
@@ -1010,11 +1068,11 @@ async deleteSchedule(id: number): Promise<void> {
           [event.recurring_group_id]
         );
         
-        console.log('Recurring event and pattern deleted'); // 디버깅용
+        console.log('Recurring event and pattern deleted');
       } else {
         // 단일 이벤트 삭제
         await db.runAsync('UPDATE events SET del_yn = 1 WHERE id = ?', [eventId]);
-        console.log('Single event deleted'); // 디버깅용
+        console.log('Single event deleted');
       }
     } catch (error) {
       console.error('Error deleting recurring event:', error);
@@ -1027,7 +1085,7 @@ async deleteSchedule(id: number): Promise<void> {
     try {
       const db = await this.ensureDbConnection();
       
-      console.log('Creating recurring pattern:', pattern); // 디버깅용
+      console.log('Creating recurring pattern:', pattern);
       
       const result = await db.runAsync(
         `INSERT INTO recurring_patterns (
@@ -1047,7 +1105,7 @@ async deleteSchedule(id: number): Promise<void> {
         ]
       );
       
-      console.log('Recurring pattern created with ID:', result.lastInsertRowId); // 디버깅용
+      console.log('Recurring pattern created with ID:', result.lastInsertRowId);
       return result.lastInsertRowId;
     } catch (error) {
       console.error('Error creating recurring pattern:', error);
@@ -1098,71 +1156,53 @@ async deleteSchedule(id: number): Promise<void> {
       );
       console.log('🧪 Retrieved events with recurring:', retrievedEvents);
       
-      // 5. 현재 주 테스트
-      const now = new Date();
-      const currentWeekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
-      const currentWeekEnd = new Date(currentWeekStart);
-      currentWeekEnd.setDate(currentWeekStart.getDate() + 6);
-      
-      const currentStartStr = currentWeekStart.toISOString().split('T')[0];
-      const currentEndStr = currentWeekEnd.toISOString().split('T')[0];
-      
-      console.log(`🧪 Testing current week: ${currentStartStr} to ${currentEndStr}`);
-      
-      const currentWeekEvents = await this.getEventsWithRecurring(
-        scheduleId,
-        currentStartStr,
-        currentEndStr
-      );
-      console.log('🧪 Current week events:', currentWeekEvents);
-      
     } catch (error) {
       console.error('🧪 Test retrieval error:', error);
     }
   }
 
-  // 반복 패턴 조회 메서드 추가
+  // ✅ 반복 패턴 조회 메서드 (정제 로직 적용)
   async getRecurringPattern(id: number): Promise<RecurringPattern | null> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getFirstAsync<RecurringPattern>(
+      const result = await db.getFirstAsync<any>(
         'SELECT * FROM recurring_patterns WHERE id = ? AND del_yn = 0',
         [id]
       );
-      return result || null;
+      return result ? this.sanitizeRecurringPatternData(result) : null;
     } catch (error) {
       console.error('Error getting recurring pattern:', error);
       throw error;
     }
   }
 
-  // 학원 ID로 학원 정보 조회 메서드 추가
+  // ✅ 학원 ID로 학원 정보 조회 메서드 (정제 로직 적용)
   async getAcademyById(id: number): Promise<Academy | null> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getFirstAsync<Academy>(
+      const result = await db.getFirstAsync<any>(
         'SELECT * FROM academies WHERE id = ? AND del_yn = 0',
         [id]
       );
-      return result || null;
+      return result ? this.sanitizeAcademyData(result) : null;
     } catch (error) {
       console.error('Error getting academy by id:', error);
       throw error;
     }
   }
 
-  // 특정 일정의 상세 정보 조회 (학원 정보 포함)
+  // ✅ 특정 일정의 상세 정보 조회 (정제 로직 적용)
   async getEventDetails(id: number): Promise<(Event & { academy_name?: string; academy_subject?: string }) | null> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getFirstAsync<Event & { academy_name?: string; academy_subject?: string }>(
+      const result = await db.getFirstAsync<any>(
         `SELECT e.*, a.name as academy_name, a.subject as academy_subject
         FROM events e
         LEFT JOIN academies a ON e.academy_id = a.id AND a.del_yn = 0
         WHERE e.id = ? AND e.del_yn = 0`,
         [id]
       );
-      return result || null;
+      return result ? this.sanitizeEventData(result) : null;
     } catch (error) {
       console.error('Error getting event details:', error);
       throw error;
@@ -1197,11 +1237,11 @@ async deleteSchedule(id: number): Promise<void> {
     }
   }
 
-  // 예외 조회
+  // ✅ 예외 조회 (정제 로직 적용)
   async getRecurringExceptions(eventId: number, startDate: string, endDate: string): Promise<RecurringException[]> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getAllAsync<RecurringException>(
+      const result = await db.getAllAsync<any>(
         `SELECT * FROM recurring_exceptions 
         WHERE recurring_event_id = ? 
           AND exception_date BETWEEN ? AND ? 
@@ -1209,7 +1249,7 @@ async deleteSchedule(id: number): Promise<void> {
         ORDER BY exception_date`,
         [eventId, startDate, endDate]
       );
-      return result;
+      return result.map(item => this.sanitizeRecurringExceptionData(item));
     } catch (error) {
       console.error('Error getting recurring exceptions:', error);
       throw error;
@@ -1287,45 +1327,45 @@ async deleteSchedule(id: number): Promise<void> {
     }
   }
 
-  // 특정 연도의 공휴일 조회
+  // ✅ 특정 연도의 공휴일 조회 (정제 로직 적용)
   async getHolidaysByYear(year: number): Promise<Holiday[]> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getAllAsync<Holiday>(
+      const result = await db.getAllAsync<any>(
         'SELECT * FROM holidays WHERE year = ? AND del_yn = 0 ORDER BY date',
         [year]
       );
-      return result;
+      return this.sanitizeHolidayArray(result);
     } catch (error) {
       console.error('Error getting holidays by year:', error);
       throw error;
     }
   }
 
-  // 특정 날짜의 공휴일 조회
+  // ✅ 특정 날짜의 공휴일 조회 (정제 로직 적용)
   async getHolidayByDate(date: string): Promise<Holiday | null> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getFirstAsync<Holiday>(
+      const result = await db.getFirstAsync<any>(
         'SELECT * FROM holidays WHERE date = ? AND del_yn = 0',
         [date]
       );
-      return result || null;
+      return result ? this.sanitizeHolidayData(result) : null;
     } catch (error) {
       console.error('Error getting holiday by date:', error);
       throw error;
     }
   }
 
-  // 특정 기간의 공휴일 조회
+  // ✅ 특정 기간의 공휴일 조회 (정제 로직 적용)
   async getHolidaysInRange(startDate: string, endDate: string): Promise<Holiday[]> {
     try {
       const db = await this.ensureDbConnection();
-      const result = await db.getAllAsync<Holiday>(
+      const result = await db.getAllAsync<any>(
         'SELECT * FROM holidays WHERE date BETWEEN ? AND ? AND del_yn = 0 ORDER BY date',
         [startDate, endDate]
       );
-      return result;
+      return this.sanitizeHolidayArray(result);
     } catch (error) {
       console.error('Error getting holidays in range:', error);
       throw error;
@@ -1388,48 +1428,11 @@ async deleteSchedule(id: number): Promise<void> {
       
       // 3. 현재 연도 공휴일 상세 목록
       const currentYear = new Date().getFullYear();
-      const currentYearHolidays = await db.getAllAsync<Holiday>(
-        'SELECT * FROM holidays WHERE year = ? AND del_yn = 0 ORDER BY date',
-        [currentYear]
-      );
+      const currentYearHolidays = await this.getHolidaysByYear(currentYear);
       
       console.log(`🧪 ${currentYear} Holiday Details:`);
       currentYearHolidays.forEach(holiday => {
         console.log(`   📅 ${holiday.date}: ${holiday.name} (Holiday: ${holiday.is_holiday})`);
-      });
-      
-      // 4. 다음 연도 공휴일 (있는 경우)
-      const nextYear = currentYear + 1;
-      const nextYearHolidays = await db.getAllAsync<Holiday>(
-        'SELECT * FROM holidays WHERE year = ? AND del_yn = 0 ORDER BY date',
-        [nextYear]
-      );
-      
-      if (nextYearHolidays.length > 0) {
-        console.log(`🧪 ${nextYear} Holiday Details:`);
-        nextYearHolidays.forEach(holiday => {
-          console.log(`   📅 ${holiday.date}: ${holiday.name} (Holiday: ${holiday.is_holiday})`);
-        });
-      } else {
-        console.log(`🧪 ${nextYear}: No holidays found`);
-      }
-      
-      // 5. 테이블 스키마 정보
-      const tableInfo = await db.getAllAsync(
-        "PRAGMA table_info(holidays)"
-      );
-      console.log('🧪 Holidays table schema:');
-      tableInfo.forEach((column: any) => {
-        console.log(`   ${column.name}: ${column.type} (nullable: ${!column.notnull})`);
-      });
-      
-      // 6. 최근 생성/수정된 공휴일
-      const recentHolidays = await db.getAllAsync<Holiday>(
-        'SELECT * FROM holidays WHERE del_yn = 0 ORDER BY created_at DESC LIMIT 5'
-      );
-      console.log('🧪 Recently added holidays:');
-      recentHolidays.forEach(holiday => {
-        console.log(`   📅 ${holiday.date}: ${holiday.name} (created: ${holiday.created_at})`);
       });
       
       console.log('🧪 === End Holiday Debug Info ===');
@@ -1446,10 +1449,7 @@ async deleteSchedule(id: number): Promise<void> {
       
       console.log(`🧪 === Holiday Debug for ${startDate} ~ ${endDate} ===`);
       
-      const holidays = await db.getAllAsync<Holiday>(
-        'SELECT * FROM holidays WHERE date BETWEEN ? AND ? AND del_yn = 0 ORDER BY date',
-        [startDate, endDate]
-      );
+      const holidays = await this.getHolidaysInRange(startDate, endDate);
       
       console.log(`🧪 Found ${holidays.length} holidays in range:`);
       holidays.forEach(holiday => {
@@ -1458,25 +1458,6 @@ async deleteSchedule(id: number): Promise<void> {
       
       if (holidays.length === 0) {
         console.log('🧪 ⚠️ No holidays found in this date range');
-        
-        // 가장 가까운 공휴일 찾기
-        const nearestBefore = await db.getFirstAsync<Holiday>(
-          'SELECT * FROM holidays WHERE date < ? AND del_yn = 0 ORDER BY date DESC LIMIT 1',
-          [startDate]
-        );
-        
-        const nearestAfter = await db.getFirstAsync<Holiday>(
-          'SELECT * FROM holidays WHERE date > ? AND del_yn = 0 ORDER BY date ASC LIMIT 1',
-          [endDate]
-        );
-        
-        if (nearestBefore) {
-          console.log(`🧪 Nearest holiday before: ${nearestBefore.date} (${nearestBefore.name})`);
-        }
-        
-        if (nearestAfter) {
-          console.log(`🧪 Nearest holiday after: ${nearestAfter.date} (${nearestAfter.name})`);
-        }
       }
       
       console.log('🧪 === End Range Debug ===');
@@ -1621,10 +1602,6 @@ async deleteSchedule(id: number): Promise<void> {
         
         // 종료월과 같은 달인 경우, 결제일 확인
         if (targetYear === endYear && targetMonth === endMonth) {
-          // 결제일 이전에 중단했다면 해당 월 비용 제외
-          // 예: 6월 15일 결제, 6월 10일 중단 → 6월 비용 제외
-          // 예: 6월 15일 결제, 6월 20일 중단 → 6월 비용 포함
-          
           // 결제 주기별 결제일 계산
           const paymentDates = this.getPaymentDatesForMonth(targetYear, targetMonth, payment_day, payment_cycle, startYear, startMonth);
           
@@ -1634,10 +1611,6 @@ async deleteSchedule(id: number): Promise<void> {
           if (!hasPaymentInMonth) {
             return false; // 해당 월에 결제일이 없으면 제외
           }
-          
-          // 첫 번째 결제일 이전에 중단했는지 확인
-          const firstPaymentDate = Math.min(...paymentDates);
-          const endDay = new Date().getDate(); // 실제로는 정확한 중단일을 알아야 하지만, 현재는 월말로 가정
           
           console.log(`📊 Payment check for ${academy.name}: payment_day=${payment_day}, end_month=${end_month}`);
           
