@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,14 +10,17 @@ import {
   Alert,
   Modal,
   TextInput,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { useFocusEffect } from '@react-navigation/native';
 import moment from 'moment';
 import 'moment/locale/ko';
+import ViewShot from 'react-native-view-shot';
 import DatabaseService, { Event, Schedule, Holiday } from '../services/DatabaseService';
 import HolidayService from '../services/HolidayService';
+import ScreenshotButton from '../components/ScreenshotButton';
 import { RootStackParamList } from '../../App';
 
 moment.locale('ko');
@@ -43,6 +46,9 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
   const [editScheduleName, setEditScheduleName] = useState('');
+
+  // 📸 스크린샷을 위한 ref
+  const captureRef = useRef<View>(null);
 
   useEffect(() => {
     loadSchedule();
@@ -570,6 +576,16 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
         <Text style={styles.headerTitle}>시간표</Text>
         
         <View style={styles.headerRight}>
+          {/* 📸 ScreenshotButton 컴포넌트 사용 */}
+          <ScreenshotButton
+            captureRef={captureRef}
+            filename={`${schedule.name}_${currentWeek.format('YYYY-MM-DD')}`}
+            onCaptureStart={() => console.log('📸 Capture started')}
+            onCaptureEnd={() => console.log('📸 Capture ended')}
+            onSuccess={(uri: string) => console.log('📸 Capture success:', uri)}
+            onError={(error: any) => console.error('📸 Capture error:', error)}
+          />
+          
           <TouchableOpacity onPress={handleRefreshHolidays} disabled={isLoadingHolidays}>
             <Ionicons 
               name={isLoadingHolidays ? "refresh" : "calendar-outline"} 
@@ -578,12 +594,16 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
               style={isLoadingHolidays ? styles.rotating : undefined}
             />
           </TouchableOpacity>
-          <TouchableOpacity onPress={debugHolidays}>
-            <Ionicons name="information-circle-outline" size={24} color="#34C759" />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={testRecurringEvents}>
-            <Ionicons name="bug-outline" size={24} color="#FF9500" />
-          </TouchableOpacity>
+          {__DEV__ && (
+            <>
+              <TouchableOpacity onPress={debugHolidays}>
+                <Ionicons name="information-circle-outline" size={24} color="#34C759" />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={testRecurringEvents}>
+                <Ionicons name="bug-outline" size={24} color="#FF9500" />
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </View>
 
@@ -624,90 +644,101 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
         </Text>
       </View>
 
-      {/* 날짜 헤더 */}
-      <View style={styles.dateHeader}>
-        <View style={[styles.timeColumn, { width: dayWidth }]} />
-        {weekDays.map((day, index) => {
-          const holiday = isHoliday(day);
-          return (
-            <View key={index} style={[styles.dayColumn, { width: dayWidth }]}>
-              <Text style={[
-                styles.dayName, 
-                isToday(day) && styles.todayText,
-                holiday && styles.holidayText
-              ]}>
-                {day.format('ddd')}
-              </Text>
-              <View style={styles.dayDateContainer}>
-                <Text style={[
-                  styles.dayDate, 
-                  isToday(day) && styles.todayDate,
-                  holiday && styles.holidayDate
-                ]}>
-                  {day.format('DD')}
-                </Text>
-                {holiday && (
-                  <View style={styles.holidayIndicator}>
-                    <Text style={styles.holidayName} numberOfLines={1}>
-                      {holiday.name}
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </View>
-          );
-        })}
-      </View>
+      {/* 📸 캡처 대상 영역 - ViewShot으로 감싸기 */}
+      <ViewShot ref={captureRef} style={styles.captureArea}>
+        {/* 캡처용 헤더 (스크린샷에만 포함) */}
+        <View style={styles.captureHeader}>
+          <Text style={styles.captureTitle}>{schedule.name}</Text>
+          <Text style={styles.captureSubtitle}>
+            {weekDays[0].format('YYYY.MM.DD')} - {weekDays[weekDays.length - 1].format('MM.DD')}
+          </Text>
+        </View>
 
-      {/* 시간표 그리드 */}
-      <ScrollView style={styles.timeTable} showsVerticalScrollIndicator={false}>
-        {timeSlots.map((time, timeIndex) => (
-          <View key={timeIndex} style={styles.timeRow}>
-            <View style={[styles.timeCell, { width: dayWidth }]}>
-              <Text style={styles.timeText}>{time}</Text>
+        {/* 날짜 헤더 */}
+        <View style={styles.dateHeader}>
+          <View style={[styles.timeColumn, { width: dayWidth }]} />
+          {weekDays.map((day, index) => {
+            const holiday = isHoliday(day);
+            return (
+              <View key={index} style={[styles.dayColumn, { width: dayWidth }]}>
+                <Text style={[
+                  styles.dayName, 
+                  isToday(day) && styles.todayText,
+                  holiday && styles.holidayText
+                ]}>
+                  {day.format('ddd')}
+                </Text>
+                <View style={styles.dayDateContainer}>
+                  <Text style={[
+                    styles.dayDate, 
+                    isToday(day) && styles.todayDate,
+                    holiday && styles.holidayDate
+                  ]}>
+                    {day.format('DD')}
+                  </Text>
+                  {holiday && (
+                    <View style={styles.holidayIndicator}>
+                      <Text style={styles.holidayName} numberOfLines={1}>
+                        {holiday.name}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* 시간표 그리드 */}
+        <ScrollView style={styles.timeTable} showsVerticalScrollIndicator={false}>
+          {timeSlots.map((time, timeIndex) => (
+            <View key={timeIndex} style={styles.timeRow}>
+              <View style={[styles.timeCell, { width: dayWidth }]}>
+                <Text style={styles.timeText}>{time}</Text>
+              </View>
+              {weekDays.map((day, dayIndex) => {
+                const holiday = isHoliday(day);
+                return (
+                  <TouchableOpacity
+                    key={dayIndex}
+                    style={[
+                      styles.scheduleCell,
+                      { width: dayWidth },
+                      isToday(day) && styles.todayColumn,
+                      holiday && styles.holidayColumn,
+                    ]}
+                    onPress={() => handleCellPress(day, time)}
+                  >
+                    {getEventsForDateAndTime(day, time).map((event, eventIndex) => {
+                      const isException = !!(event as any).exception_id;
+                      return (
+                        <View
+                          key={`${event.id}-${eventIndex}`}
+                          style={[
+                            styles.eventBlock,
+                            getEventStyle(event.category),
+                            isException && styles.exceptionEventBlock, // 예외 스타일 추가
+                          ]}
+                        >
+                          <Text style={styles.eventTitle} numberOfLines={1}>
+                            {event.title}
+                            {event.is_recurring && !isException && (
+                              <Text style={styles.recurringIndicator}> ↻</Text>
+                            )}
+                            {isException && (
+                              <Text style={styles.exceptionIndicator}> ✱</Text>
+                            )}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
-            {weekDays.map((day, dayIndex) => {
-              const holiday = isHoliday(day);
-              return (
-                <TouchableOpacity
-                  key={dayIndex}
-                  style={[
-                    styles.scheduleCell,
-                    { width: dayWidth },
-                    isToday(day) && styles.todayColumn,
-                    holiday && styles.holidayColumn,
-                  ]}
-                  onPress={() => handleCellPress(day, time)}
-                >
-                  {getEventsForDateAndTime(day, time).map((event, eventIndex) => {
-                    const isException = !!(event as any).exception_id;
-                    return (
-                      <View
-                        key={`${event.id}-${eventIndex}`}
-                        style={[
-                          styles.eventBlock,
-                          getEventStyle(event.category),
-                          isException && styles.exceptionEventBlock, // 예외 스타일 추가
-                        ]}
-                      >
-                        <Text style={styles.eventTitle} numberOfLines={1}>
-                          {event.title}
-                          {event.is_recurring && !isException && (
-                            <Text style={styles.recurringIndicator}> ↻</Text>
-                          )}
-                          {isException && (
-                            <Text style={styles.exceptionIndicator}> ✱</Text>
-                          )}
-                        </Text>
-                      </View>
-                    );
-                  })}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        ))}
-      </ScrollView>
+          ))}
+        </ScrollView>
+      </ViewShot>
 
       {/* 스케줄 드롭다운 모달 */}
       <Modal
@@ -857,6 +888,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
+  headerButton: {
+    padding: 4,
+  },
   rotating: {
     opacity: 0.6,
   },
@@ -892,6 +926,30 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#856404',
     textAlign: 'center',
+  },
+  // 📸 캡처 관련 스타일
+  captureArea: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  captureHeader: {
+    alignItems: 'center',
+    paddingVertical: 15,
+    paddingHorizontal: 20,
+    borderBottomWidth: 2,
+    borderBottomColor: '#007AFF',
+    backgroundColor: '#f8f9fa',
+  },
+  captureTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 5,
+  },
+  captureSubtitle: {
+    fontSize: 16,
+    color: '#666',
+    fontWeight: '500',
   },
   dateHeader: {
     flexDirection: 'row',
@@ -1001,6 +1059,16 @@ const styles = StyleSheet.create({
   recurringIndicator: {
     fontSize: 8,
     opacity: 0.8,
+  },
+  exceptionEventBlock: {
+    borderWidth: 2,
+    borderColor: '#FF9500',
+    borderStyle: 'dashed',
+  },
+  exceptionIndicator: {
+    fontSize: 8,
+    opacity: 0.8,
+    color: '#FF9500',
   },
   // 스케줄 드롭다운 모달 스타일
   modalOverlay: {
@@ -1152,16 +1220,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
-  },
-  exceptionEventBlock: {
-    borderWidth: 2,
-    borderColor: '#FF9500',
-    borderStyle: 'dashed',
-  },
-  exceptionIndicator: {
-    fontSize: 8,
-    opacity: 0.8,
-    color: '#FF9500',
   },
 });
 
