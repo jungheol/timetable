@@ -1,5 +1,6 @@
 import moment from 'moment';
 import { Event, Schedule } from '../services/DatabaseService';
+import { Dimensions } from 'react-native';
 
 // 주간 날짜 계산
 export const getWeekDays = (schedule: Schedule | null, currentWeek: moment.Moment) => {
@@ -82,8 +83,24 @@ export const isToday = (date: moment.Moment) => {
   return date.isSame(moment(), 'day');
 };
 
-// 화면 너비 계산
+// 일요일 체크 유틸리티 추가
+export const isSunday = (date: moment.Moment) => {
+  return date.day() === 0; // 0 = 일요일
+};
+
+// 화면 너비 계산 - 개선됨 (토요일 짤림 문제 해결)
 export const calculateDayWidth = (screenWidth: number, schedule: Schedule | null) => {
-  if (!schedule) return screenWidth / 6;
-  return schedule.show_weekend ? screenWidth / 8 : screenWidth / 6; // 시간 열 포함
+  if (!schedule) return 50; // 기본값
+  
+  const timeSlotWidth = 60; // 시간 슬롯 실제 너비
+  const dayCount = schedule.show_weekend ? 7 : 5;
+  const borderWidth = dayCount; // 각 날짜 칸의 우측 테두리
+  const padding = 0; // 좌우 패딩
+  
+  // 사용 가능한 너비 계산
+  const availableWidth = screenWidth - timeSlotWidth - borderWidth - padding;
+  const dayWidth = Math.floor(availableWidth / dayCount);
+  
+  // 최소 너비 보장
+  return Math.max(dayWidth, 35);
 };

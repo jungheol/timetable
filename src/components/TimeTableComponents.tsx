@@ -9,6 +9,7 @@ import {
   TextInput,
   TouchableWithoutFeedback,
   Alert,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import ViewShot from 'react-native-view-shot';
@@ -83,6 +84,10 @@ interface EditScheduleModalProps {
 // 유틸리티 함수들
 const isToday = (date: moment.Moment): boolean => {
   return date.isSame(moment(), 'day');
+};
+
+const isSunday = (date: moment.Moment): boolean => {
+  return date.day() === 0; // 0 = 일요일
 };
 
 const getEventsForDateAndTime = (events: Event[], date: moment.Moment, time: string): ExtendedEvent[] => {
@@ -210,7 +215,7 @@ export const WeekNavigation: React.FC<WeekNavigationProps> = ({
   );
 };
 
-// 날짜 헤더 컴포넌트
+// 날짜 헤더 컴포넌트 - 일요일 색상 추가
 export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holidays }) => {
   return (
     <View style={dateHeaderStyles.container}>
@@ -220,6 +225,7 @@ export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holi
         const holiday = holidays[dayKey];
         const isTodayDay = isToday(day);
         const isHolidayDay = !!holiday;
+        const isSundayDay = isSunday(day); // 일요일 체크 추가
 
         return (
           <View 
@@ -228,22 +234,22 @@ export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holi
               dateHeaderStyles.dayHeader,
               { width: dayWidth },
               isTodayDay && dateHeaderStyles.todayHeader,
-              isHolidayDay && dateHeaderStyles.holidayHeader,
+              (isHolidayDay || isSundayDay) && dateHeaderStyles.holidayHeader, // 일요일도 공휴일 스타일 적용
             ]}
           >
             <Text style={[
               dateHeaderStyles.dayName,
               isTodayDay && dateHeaderStyles.todayText,
-              isHolidayDay && dateHeaderStyles.holidayText,
+              (isHolidayDay || isSundayDay) && dateHeaderStyles.holidayText, // 일요일도 공휴일 텍스트 색상 적용
             ]}>
               {day.format('ddd')}
             </Text>
             <Text style={[
               dateHeaderStyles.dayDate,
               isTodayDay && dateHeaderStyles.todayText,
-              isHolidayDay && dateHeaderStyles.holidayText,
+              (isHolidayDay || isSundayDay) && dateHeaderStyles.holidayText, // 일요일도 공휴일 텍스트 색상 적용
             ]}>
-              {day.format('D')}
+              {day.format('M/D')}
             </Text>
             {holiday && (
               <Text style={dateHeaderStyles.holidayName} numberOfLines={1}>
@@ -257,7 +263,7 @@ export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holi
   );
 };
 
-// 시간표 그리드 컴포넌트
+// 시간표 그리드 컴포넌트 - 일요일 색상 추가
 export const TimeTableGrid: React.FC<TimeTableGridProps> = ({
   timeSlots,
   weekDays,
@@ -279,6 +285,7 @@ export const TimeTableGrid: React.FC<TimeTableGridProps> = ({
             const dayKey = day.format('YYYY-MM-DD');
             const isHolidayDay = !!holidays[dayKey];
             const isTodayDay = isToday(day);
+            const isSundayDay = isSunday(day); // 일요일 체크 추가
 
             return (
               <TouchableOpacity
@@ -288,7 +295,7 @@ export const TimeTableGrid: React.FC<TimeTableGridProps> = ({
                   { width: dayWidth },
                   hasEvent && gridStyles.eventCell,
                   isTodayDay && gridStyles.todayCell,
-                  isHolidayDay && gridStyles.holidayCell,
+                  (isHolidayDay || isSundayDay) && gridStyles.holidayCell, // 일요일도 공휴일 셀 스타일 적용
                 ]}
                 onPress={() => onCellPress(day, time)}
                 activeOpacity={0.7}
@@ -303,7 +310,7 @@ export const TimeTableGrid: React.FC<TimeTableGridProps> = ({
                         gridStyles.eventTitle,
                         { color: getEventStyle(dayEvents[0].category).color }
                       ]}
-                      numberOfLines={2}
+                      numberOfLines={1}
                     >
                       {dayEvents[0].title}
                     </Text>
@@ -537,7 +544,7 @@ const dateHeaderStyles = StyleSheet.create({
     borderBottomColor: '#dee2e6',
   },
   timeSlot: {
-    width: 50,
+    width: 60,
     height: 60,
     backgroundColor: '#fff',
     borderRightWidth: 1,
@@ -593,7 +600,7 @@ const gridStyles = StyleSheet.create({
     borderBottomColor: '#f0f0f0',
   },
   timeSlot: {
-    width: 50,
+    width: 60,
     height: 50,
     justifyContent: 'center',
     alignItems: 'center',
@@ -629,10 +636,9 @@ const gridStyles = StyleSheet.create({
     justifyContent: 'center',
   },
   eventTitle: {
-    fontSize: 9,
+    fontSize: 11,
     fontWeight: '600',
     lineHeight: 14,
-    textAlign: 'center',
   },
   eventSubtitle: {
     fontSize: 9,

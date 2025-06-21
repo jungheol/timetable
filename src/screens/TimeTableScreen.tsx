@@ -91,11 +91,17 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     if (!schedule) {
       return { weekDays: [], timeSlots: [], dayWidth: 0 };
     }
-
+  
+    const calculatedWeekDays = getWeekDays(schedule, currentWeek);
+    const calculatedTimeSlots = getTimeSlots(schedule);
+    
+    // 기존 calculateDayWidth 함수 사용 (매개변수 순서 맞춤)
+    const calculatedDayWidth = calculateDayWidth(screenWidth, schedule);
+  
     return {
-      weekDays: getWeekDays(schedule, currentWeek),
-      timeSlots: getTimeSlots(schedule),
-      dayWidth: calculateDayWidth(screenWidth, schedule)
+      weekDays: calculatedWeekDays,
+      timeSlots: calculatedTimeSlots,
+      dayWidth: calculatedDayWidth
     };
   }, [
     schedule?.id,
