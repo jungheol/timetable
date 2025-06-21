@@ -157,7 +157,7 @@ export const useEventLogic = (
 
   // 초기화
   useEffect(() => {
-    loadInitialData(event);
+    loadInitialData(event, selectedTime);
   }, []);
 
   // ✅ 이벤트 데이터가 변경될 때 예외 상태 업데이트

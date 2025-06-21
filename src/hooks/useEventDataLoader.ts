@@ -60,28 +60,6 @@ export const useEventDataLoader = ({
     }
   }, [selectedDate, setCurrentException]);
 
-  // ✅ 초기 데이터 로드
-  const loadInitialData = useCallback(async (event?: Event | null) => {
-    try {
-      const [activeSchedule, academyList] = await Promise.all([
-        DatabaseService.getActiveSchedule(),
-        DatabaseService.getAcademiesBySchedule(scheduleId)
-      ]);
-      
-      setSchedule(activeSchedule);
-      setAcademies(academyList);
-      
-      if (event) {
-        await loadEventData(event, academyList);
-      } else {
-        initializeNewEventForm(activeSchedule);
-      }
-    } catch (error) {
-      console.error('Error loading initial data:', error);
-      Alert.alert('오류', '데이터를 불러오는 중 오류가 발생했습니다.');
-    }
-  }, [scheduleId, setSchedule, setAcademies]);
-
   // ✅ 요일 선택 로드
   const loadDaySelection = useCallback(async (sanitizedEvent: Event) => {
     const currentDayKey = getCurrentDayKey(selectedDate);
@@ -257,6 +235,28 @@ export const useEventDataLoader = ({
     console.log('🆕 New event form updates:', formUpdates);
     setFormData(prev => ({ ...prev, ...formUpdates }));
   }, [selectedDate, setFormData]);
+
+  // ✅ 초기 데이터 로드
+  const loadInitialData = useCallback(async (event?: Event | null, selectedTime?: string) => {
+    try {
+      const [activeSchedule, academyList] = await Promise.all([
+        DatabaseService.getActiveSchedule(),
+        DatabaseService.getAcademiesBySchedule(scheduleId)
+      ]);
+      
+      setSchedule(activeSchedule);
+      setAcademies(academyList);
+      
+      if (event) {
+        await loadEventData(event, academyList);
+      } else {
+        initializeNewEventForm(activeSchedule, selectedTime);
+      }
+    } catch (error) {
+      console.error('Error loading initial data:', error);
+      Alert.alert('오류', '데이터를 불러오는 중 오류가 발생했습니다.');
+    }
+  }, [scheduleId, setSchedule, setAcademies, loadEventData, initializeNewEventForm]);
 
   return {
     loadInitialData,
