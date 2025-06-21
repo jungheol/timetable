@@ -260,6 +260,10 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
         filename={`${schedule!.name}_${currentWeek.format('YYYY-MM-DD')}`}
         onRefreshHolidays={handleRefreshHolidaysWithAlert}
         isLoadingHolidays={isLoadingHolidays}
+        events={events}
+        holidays={holidays}
+        weekDays={weekDays}
+        timeSlots={timeSlots}
       />
 
       {/* 주간 네비게이션 */}

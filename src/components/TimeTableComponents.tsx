@@ -16,6 +16,13 @@ import moment from 'moment';
 
 import { Schedule, Event, Holiday } from '../services/DatabaseService';
 import ScreenshotButton from './ScreenshotButton';
+import PDFExportButton from './PDFExportButton'; // 새로 추가
+
+// 확장된 Event 타입 (JOIN으로 가져온 academy 정보 포함)
+interface ExtendedEvent extends Event {
+  academy_name?: string;
+  academy_subject?: string;
+}
 
 // Props 인터페이스들
 interface TimeTableHeaderProps {
@@ -25,6 +32,11 @@ interface TimeTableHeaderProps {
   filename: string;
   onRefreshHolidays: () => void;
   isLoadingHolidays: boolean;
+  // PDF 내보내기를 위한 추가 props
+  events: Event[];
+  holidays: { [key: string]: Holiday }; // 객체 형태로 수정
+  weekDays: moment.Moment[];
+  timeSlots: string[];
 }
 
 interface WeekNavigationProps {
@@ -73,7 +85,7 @@ const isToday = (date: moment.Moment): boolean => {
   return date.isSame(moment(), 'day');
 };
 
-const getEventsForDateAndTime = (events: Event[], date: moment.Moment, time: string): Event[] => {
+const getEventsForDateAndTime = (events: Event[], date: moment.Moment, time: string): ExtendedEvent[] => {
   const dateStr = date.format('YYYY-MM-DD');
   return events.filter(event => {
     const eventDateMatches = event.event_date === dateStr;
@@ -82,7 +94,7 @@ const getEventsForDateAndTime = (events: Event[], date: moment.Moment, time: str
     const currentTime = moment(time, 'HH:mm');
     const timeMatches = eventStartTime.isSameOrBefore(currentTime) && eventEndTime.isAfter(currentTime);
     return eventDateMatches && timeMatches;
-  });
+  }) as ExtendedEvent[];
 };
 
 const getEventStyle = (category: string) => {
@@ -103,6 +115,10 @@ export const TimeTableHeader: React.FC<TimeTableHeaderProps> = ({
   filename,
   onRefreshHolidays,
   isLoadingHolidays,
+  events,
+  holidays,
+  weekDays,
+  timeSlots,
 }) => {
   return (
     <View style={headerStyles.container}>
@@ -126,7 +142,22 @@ export const TimeTableHeader: React.FC<TimeTableHeaderProps> = ({
           />
         </TouchableOpacity>
         
-        {/* ✅ 고급 ScreenshotButton 컴포넌트 사용 */}
+        {/* PDF 내보내기 버튼 */}
+        <PDFExportButton
+          schedule={schedule}
+          events={events}
+          holidays={holidays}
+          weekDays={weekDays}
+          timeSlots={timeSlots}
+          size={20}
+          color="#007AFF"
+          style={headerStyles.button}
+          onExportStart={() => console.log('📄 PDF export starting...')}
+          onSuccess={(uri) => console.log('✅ PDF exported:', uri)}
+          onError={(error) => console.error('❌ PDF export error:', error)}
+        />
+        
+        {/* 기존 ScreenshotButton */}
         <ScreenshotButton
           captureRef={captureRef}
           filename={filename}
@@ -180,41 +211,51 @@ export const WeekNavigation: React.FC<WeekNavigationProps> = ({
 };
 
 // 날짜 헤더 컴포넌트
-export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holidays }) => (
-  <View style={dateHeaderStyles.container}>
-    <View style={[dateHeaderStyles.timeColumn, { width: dayWidth }]} />
-    {weekDays.map((day, index) => {
-      const holiday = holidays[day.format('YYYY-MM-DD')];
-      const today = isToday(day);
-      
-      return (
-        <View key={index} style={[dateHeaderStyles.dayColumn, { width: dayWidth }]}>
-          <Text style={dateHeaderStyles.dayName}>
-            {day.format('ddd')}
-          </Text>
-          <View style={dateHeaderStyles.dayDateContainer}>
-            <Text
-              style={[
-                dateHeaderStyles.dayDate,
-                today && dateHeaderStyles.todayDate,
-                holiday && !today && dateHeaderStyles.holidayDate,
-              ]}
-            >
+export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holidays }) => {
+  return (
+    <View style={dateHeaderStyles.container}>
+      <View style={dateHeaderStyles.timeSlot} />
+      {weekDays.map((day, index) => {
+        const dayKey = day.format('YYYY-MM-DD');
+        const holiday = holidays[dayKey];
+        const isTodayDay = isToday(day);
+        const isHolidayDay = !!holiday;
+
+        return (
+          <View 
+            key={index} 
+            style={[
+              dateHeaderStyles.dayHeader,
+              { width: dayWidth },
+              isTodayDay && dateHeaderStyles.todayHeader,
+              isHolidayDay && dateHeaderStyles.holidayHeader,
+            ]}
+          >
+            <Text style={[
+              dateHeaderStyles.dayName,
+              isTodayDay && dateHeaderStyles.todayText,
+              isHolidayDay && dateHeaderStyles.holidayText,
+            ]}>
+              {day.format('ddd')}
+            </Text>
+            <Text style={[
+              dateHeaderStyles.dayDate,
+              isTodayDay && dateHeaderStyles.todayText,
+              isHolidayDay && dateHeaderStyles.holidayText,
+            ]}>
               {day.format('D')}
             </Text>
             {holiday && (
-              <View style={dateHeaderStyles.holidayIndicator}>
-                <Text style={dateHeaderStyles.holidayName} numberOfLines={1}>
-                  {holiday.name}
-                </Text>
-              </View>
+              <Text style={dateHeaderStyles.holidayName} numberOfLines={1}>
+                {holiday.name}
+              </Text>
             )}
           </View>
-        </View>
-      );
-    })}
-  </View>
-);
+        );
+      })}
+    </View>
+  );
+};
 
 // 시간표 그리드 컴포넌트
 export const TimeTableGrid: React.FC<TimeTableGridProps> = ({
@@ -224,60 +265,71 @@ export const TimeTableGrid: React.FC<TimeTableGridProps> = ({
   events,
   holidays,
   onCellPress,
-}) => (
-  <ScrollView style={gridStyles.container} showsVerticalScrollIndicator={false}>
-    {timeSlots.map((time, timeIndex) => (
-      <View key={timeIndex} style={gridStyles.timeRow}>
-        <View style={[gridStyles.timeCell, { width: dayWidth }]}>
-          <Text style={gridStyles.timeText}>{time}</Text>
-        </View>
-        {weekDays.map((day, dayIndex) => {
-          const holiday = holidays[day.format('YYYY-MM-DD')];
-          const cellEvents = getEventsForDateAndTime(events, day, time);
-          
-          return (
-            <TouchableOpacity
-              key={dayIndex}
-              style={[
-                gridStyles.scheduleCell,
-                { width: dayWidth },
-                isToday(day) && gridStyles.todayColumn,
-                holiday && gridStyles.holidayColumn,
-              ]}
-              onPress={() => onCellPress(day, time)}
-            >
-              {cellEvents.map((event, eventIndex) => {
-                const isException = !!(event as any).exception_id;
-                return (
-                  <View
-                    key={`${event.id}-${eventIndex}`}
-                    style={[
-                      gridStyles.eventBlock,
-                      getEventStyle(event.category),
-                      isException && gridStyles.exceptionEventBlock,
-                    ]}
-                  >
-                    <Text style={gridStyles.eventTitle} numberOfLines={1}>
-                      {event.title}
-                      {event.is_recurring && !isException && (
-                        <Text style={gridStyles.recurringIndicator}> ↻</Text>
-                      )}
-                      {isException && (
-                        <Text style={gridStyles.exceptionIndicator}> ✱</Text>
-                      )}
-                    </Text>
-                  </View>
-                );
-              })}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    ))}
-  </ScrollView>
-);
+}) => {
+  return (
+    <ScrollView style={gridStyles.container} showsVerticalScrollIndicator={false}>
+      {timeSlots.map((time, timeIndex) => (
+        <View key={timeIndex} style={gridStyles.timeRow}>
+          <View style={gridStyles.timeSlot}>
+            <Text style={gridStyles.timeText}>{time}</Text>
+          </View>
+          {weekDays.map((day, dayIndex) => {
+            const dayEvents = getEventsForDateAndTime(events, day, time);
+            const hasEvent = dayEvents.length > 0;
+            const dayKey = day.format('YYYY-MM-DD');
+            const isHolidayDay = !!holidays[dayKey];
+            const isTodayDay = isToday(day);
 
-// ✅ 수정된 스케줄 드롭다운 모달 컴포넌트 (플리커링 방지)
+            return (
+              <TouchableOpacity
+                key={dayIndex}
+                style={[
+                  gridStyles.timeCell,
+                  { width: dayWidth },
+                  hasEvent && gridStyles.eventCell,
+                  isTodayDay && gridStyles.todayCell,
+                  isHolidayDay && gridStyles.holidayCell,
+                ]}
+                onPress={() => onCellPress(day, time)}
+                activeOpacity={0.7}
+              >
+                {hasEvent && (
+                  <View style={[
+                    gridStyles.eventContent,
+                    { backgroundColor: getEventStyle(dayEvents[0].category).backgroundColor }
+                  ]}>
+                    <Text 
+                      style={[
+                        gridStyles.eventTitle,
+                        { color: getEventStyle(dayEvents[0].category).color }
+                      ]}
+                      numberOfLines={2}
+                    >
+                      {dayEvents[0].title}
+                    </Text>
+                    {dayEvents[0].academy_name && (
+                      <Text 
+                        style={[
+                          gridStyles.eventSubtitle,
+                          { color: getEventStyle(dayEvents[0].category).color }
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {dayEvents[0].academy_name}
+                      </Text>
+                    )}
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ))}
+    </ScrollView>
+  );
+};
+
+// 스케줄 드롭다운 모달 컴포넌트
 export const ScheduleDropdownModal: React.FC<ScheduleDropdownModalProps> = ({
   visible,
   onClose,
@@ -287,103 +339,68 @@ export const ScheduleDropdownModal: React.FC<ScheduleDropdownModalProps> = ({
   onEditSchedule,
   onCreateNew,
 }) => {
-  // ✅ 중복 호출 방지를 위한 플래그
-  const [isClosing, setIsClosing] = useState(false);
-
-  // ✅ 모달이 열릴 때마다 상태 초기화
-  useEffect(() => {
-    if (visible) {
-      setIsClosing(false);
-    }
-  }, [visible]);
-
-  // ✅ 외부 터치 시 모달 닫기 (중복 방지)
-  const handleOverlayPress = useCallback(() => {
-    if (isClosing) return; // 이미 닫는 중이면 무시
-    
-    setIsClosing(true);
-    onClose();
-  }, [isClosing, onClose]);
-
-  // ✅ 모달 내부 터치 시 이벤트 전파 방지
-  const handleModalContentPress = useCallback((event: any) => {
-    event.stopPropagation(); // 이벤트 전파 방지
-  }, []);
-
-  // ✅ 스케줄 변경 시 모달 닫기
-  const handleScheduleChange = useCallback((schedule: Schedule) => {
-    if (isClosing) return; // 이미 닫는 중이면 무시
-    
-    setIsClosing(true);
-    onScheduleChange(schedule);
-  }, [isClosing, onScheduleChange]);
-
-  // ✅ 스케줄 편집 시 모달 닫기
-  const handleEditSchedule = useCallback((schedule: Schedule) => {
-    if (isClosing) return; // 이미 닫는 중이면 무시
-    
-    setIsClosing(true);
-    onEditSchedule(schedule);
-  }, [isClosing, onEditSchedule]);
-
-  // ✅ 새 스케줄 생성 시 모달 닫기
-  const handleCreateNew = useCallback(() => {
-    if (isClosing) return; // 이미 닫는 중이면 무시
-    
-    setIsClosing(true);
-    onCreateNew();
-  }, [isClosing, onCreateNew]);
-
   return (
     <Modal
       visible={visible}
-      transparent={true}
+      transparent
       animationType="fade"
-      onRequestClose={handleOverlayPress}
+      onRequestClose={onClose}
     >
-      {/* ✅ TouchableWithoutFeedback으로 변경하여 더 정확한 터치 감지 */}
-      <TouchableWithoutFeedback onPress={handleOverlayPress}>
+      <TouchableWithoutFeedback onPress={onClose}>
         <View style={modalStyles.overlay}>
-          {/* ✅ 모달 컨텐츠 영역 - 터치 이벤트 전파 방지 */}
-          <TouchableWithoutFeedback onPress={handleModalContentPress}>
-            <View style={modalStyles.dropdownContainer}>
-              <Text style={modalStyles.dropdownTitle}>스케줄 선택</Text>
-              
-              <ScrollView style={modalStyles.scheduleList} showsVerticalScrollIndicator={false}>
-                {schedules.map((scheduleItem) => (
-                  <View key={scheduleItem.id} style={modalStyles.scheduleItem}>
-                    <TouchableOpacity
-                      style={[
-                        modalStyles.scheduleNameButton,
-                        scheduleItem.id === currentSchedule.id && modalStyles.activeScheduleItem
-                      ]}
-                      onPress={() => handleScheduleChange(scheduleItem)}
-                    >
+          <TouchableWithoutFeedback>
+            <View style={modalStyles.dropdown}>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {schedules.map((schedule, index) => (
+                  <TouchableOpacity
+                    key={schedule.id}
+                    style={[
+                      modalStyles.scheduleItem,
+                      schedule.id === currentSchedule.id && modalStyles.selectedScheduleItem,
+                      index === schedules.length - 1 && { borderBottomWidth: 0 }
+                    ]}
+                    onPress={() => {
+                      onScheduleChange(schedule);
+                      onClose();
+                    }}
+                  >
+                    <View style={modalStyles.scheduleInfo}>
                       <Text style={[
-                        modalStyles.scheduleNameText,
-                        scheduleItem.id === currentSchedule.id && modalStyles.activeScheduleText
+                        modalStyles.scheduleName,
+                        schedule.id === currentSchedule.id && modalStyles.selectedScheduleName
                       ]}>
-                        {scheduleItem.name}
+                        {schedule.name}
                       </Text>
-                      {scheduleItem.id === currentSchedule.id && (
-                        <Ionicons name="checkmark" size={20} color="#007AFF" />
-                      )}
-                    </TouchableOpacity>
-                    
-                    <TouchableOpacity
-                      style={modalStyles.editButton}
-                      onPress={() => handleEditSchedule(scheduleItem)}
-                    >
-                      <Ionicons name="create-outline" size={20} color="#666" />
-                    </TouchableOpacity>
-                  </View>
+                      <Text style={modalStyles.scheduleTime}>
+                        {schedule.start_time} - {schedule.end_time}
+                      </Text>
+                    </View>
+                    {schedule.id === currentSchedule.id && (
+                      <TouchableOpacity
+                        style={modalStyles.editButton}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          onEditSchedule(schedule);
+                          onClose();
+                        }}
+                      >
+                        <Ionicons name="create-outline" size={18} color="#007AFF" />
+                      </TouchableOpacity>
+                    )}
+                  </TouchableOpacity>
                 ))}
+                
+                <TouchableOpacity
+                  style={modalStyles.createButton}
+                  onPress={() => {
+                    onCreateNew();
+                    onClose();
+                  }}
+                >
+                  <Ionicons name="add" size={20} color="#007AFF" />
+                  <Text style={modalStyles.createButtonText}>새 일정표 만들기</Text>
+                </TouchableOpacity>
               </ScrollView>
-              
-              <TouchableOpacity style={modalStyles.createButton} onPress={handleCreateNew}>
-                <Ionicons name="add" size={20} color="#fff" />
-                <Text style={modalStyles.createButtonText}>새 스케줄 만들기</Text>
-              </TouchableOpacity>
             </View>
           </TouchableWithoutFeedback>
         </View>
@@ -399,47 +416,55 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
   scheduleName,
   onScheduleNameChange,
   onSave,
-}) => (
-  <Modal
-    visible={visible}
-    transparent={true}
-    animationType="slide"
-    onRequestClose={onClose}
-  >
-    <View style={editModalStyles.overlay}>
-      <View style={editModalStyles.container}>
-        <Text style={editModalStyles.title}>스케줄 이름 수정</Text>
-        
-        <TextInput
-          style={editModalStyles.input}
-          value={scheduleName}
-          onChangeText={onScheduleNameChange}
-          placeholder="스케줄 이름을 입력하세요"
-          autoFocus={true}
-          maxLength={50}
-        />
-        
-        <View style={editModalStyles.buttons}>
-          <TouchableOpacity
-            style={[editModalStyles.button, editModalStyles.cancelButton]}
-            onPress={onClose}
-          >
-            <Text style={editModalStyles.cancelButtonText}>취소</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[editModalStyles.button, editModalStyles.saveButton]}
-            onPress={onSave}
-          >
-            <Text style={editModalStyles.saveButtonText}>저장</Text>
-          </TouchableOpacity>
+}) => {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <TouchableWithoutFeedback onPress={onClose}>
+        <View style={editModalStyles.overlay}>
+          <TouchableWithoutFeedback>
+            <View style={editModalStyles.modal}>
+              <View style={editModalStyles.header}>
+                <Text style={editModalStyles.title}>일정표 이름 변경</Text>
+                <TouchableOpacity onPress={onClose} style={editModalStyles.closeButton}>
+                  <Ionicons name="close" size={24} color="#666" />
+                </TouchableOpacity>
+              </View>
+              
+              <View style={editModalStyles.content}>
+                <TextInput
+                  style={editModalStyles.input}
+                  value={scheduleName}
+                  onChangeText={onScheduleNameChange}
+                  placeholder="일정표 이름을 입력하세요"
+                  maxLength={50}
+                  autoFocus
+                />
+                
+                <TouchableOpacity
+                  style={[
+                    editModalStyles.saveButton,
+                    !scheduleName.trim() && editModalStyles.saveButtonDisabled
+                  ]}
+                  onPress={onSave}
+                  disabled={!scheduleName.trim()}
+                >
+                  <Text style={editModalStyles.saveButtonText}>저장</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableWithoutFeedback>
         </View>
-      </View>
-    </View>
-  </Modal>
-);
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
-// 스타일 정의
+// 스타일 정의들
 const headerStyles = StyleSheet.create({
   container: {
     flexDirection: 'row',
@@ -447,26 +472,31 @@ const headerStyles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 15,
+    backgroundColor: '#f8f9fa',
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: '#e9ecef',
   },
   scheduleButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+    paddingRight: 20,
   },
   scheduleButtonText: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '600',
-    color: '#007AFF',
-    maxWidth: 100,
+    color: '#333',
+    marginRight: 8,
   },
   rightButtons: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
   },
   button: {
-    padding: 4,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 122, 255, 0.1)',
   },
   rotating: {
     opacity: 0.6,
@@ -480,7 +510,9 @@ const weekNavigationStyles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 15,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e9ecef',
   },
   titleContainer: {
     alignItems: 'center',
@@ -489,79 +521,65 @@ const weekNavigationStyles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: '#333',
+    marginBottom: 2,
   },
   subtitle: {
     fontSize: 14,
     color: '#666',
-    marginTop: 2,
   },
 });
 
 const dateHeaderStyles = StyleSheet.create({
   container: {
     flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
     backgroundColor: '#f8f9fa',
+    borderBottomWidth: 1,
+    borderBottomColor: '#dee2e6',
   },
-  timeColumn: {
-    paddingVertical: 15,
-    alignItems: 'center',
+  timeSlot: {
+    width: 50,
+    height: 60,
+    backgroundColor: '#fff',
+    borderRightWidth: 1,
+    borderRightColor: '#dee2e6',
+  },
+  dayHeader: {
+    height: 60,
     justifyContent: 'center',
-  },
-  dayColumn: {
-    paddingVertical: 10,
     alignItems: 'center',
-    borderLeftWidth: 1,
-    borderLeftColor: '#e0e0e0',
+    borderRightWidth: 1,
+    borderRightColor: '#dee2e6',
+    backgroundColor: '#fff',
+    paddingHorizontal: 4,
+  },
+  todayHeader: {
+    backgroundColor: '#e3f2fd',
+  },
+  holidayHeader: {
+    backgroundColor: '#ffebee',
   },
   dayName: {
     fontSize: 12,
-    color: '#666',
-    marginBottom: 5,
-  },
-  dayDateContainer: {
-    alignItems: 'center',
-    position: 'relative',
-    minHeight: 30,
-  },
-  dayDate: {
-    fontSize: 16,
     fontWeight: '600',
     color: '#333',
+    marginBottom: 2,
+  },
+  dayDate: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#666',
   },
   todayText: {
-    color: '#007AFF',
-  },
-  todayDate: {
-    color: '#fff',
-    backgroundColor: '#007AFF',
-    borderRadius: 12,
-    width: 24,
-    height: 24,
-    textAlign: 'center',
-    lineHeight: 24,
+    color: '#1976d2',
   },
   holidayText: {
-    color: '#FF3B30',
-  },
-  holidayDate: {
-    color: '#FF3B30',
-    fontWeight: 'bold',
-  },
-  holidayIndicator: {
-    marginTop: 6,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    backgroundColor: '#FFE6E6',
-    borderRadius: 4,
-    maxWidth: 60,
+    color: '#c62828',
   },
   holidayName: {
-    fontSize: 8,
-    color: '#FF3B30',
+    fontSize: 10,
+    color: '#c62828',
+    marginTop: 2,
     textAlign: 'center',
-    fontWeight: '500',
   },
 });
 
@@ -574,51 +592,52 @@ const gridStyles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
-  timeCell: {
-    paddingVertical: 20,
-    alignItems: 'center',
+  timeSlot: {
+    width: 50,
+    height: 50,
     justifyContent: 'center',
-    backgroundColor: '#f8f9fa',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRightWidth: 1,
+    borderRightColor: '#dee2e6',
   },
   timeText: {
     fontSize: 12,
     color: '#666',
-  },
-  scheduleCell: {
-    minHeight: 60,
-    borderLeftWidth: 1,
-    borderLeftColor: '#f0f0f0',
-    padding: 5,
-  },
-  todayColumn: {
-    backgroundColor: '#f0f8ff',
-  },
-  holidayColumn: {
-    backgroundColor: '#fff5f5',
-  },
-  eventBlock: {
-    borderRadius: 4,
-    padding: 4,
-    marginVertical: 1,
-    marginHorizontal: 2,
-  },
-  eventTitle: {
-    fontSize: 10,
     fontWeight: '500',
   },
-  recurringIndicator: {
-    fontSize: 8,
-    opacity: 0.8,
+  timeCell: {
+    height: 50,
+    borderRightWidth: 1,
+    borderRightColor: '#f0f0f0',
+    backgroundColor: '#fff',
+    padding: 2,
   },
-  exceptionEventBlock: {
-    borderWidth: 2,
-    borderColor: '#FF9500',
-    borderStyle: 'dashed',
+  eventCell: {
+    backgroundColor: '#f8f9fa',
   },
-  exceptionIndicator: {
-    fontSize: 8,
-    opacity: 0.8,
-    color: '#FF9500',
+  todayCell: {
+    backgroundColor: '#f3f8ff',
+  },
+  holidayCell: {
+    backgroundColor: '#fefefe',
+  },
+  eventContent: {
+    flex: 1,
+    borderRadius: 4,
+    padding: 4,
+    justifyContent: 'center',
+  },
+  eventTitle: {
+    fontSize: 9,
+    fontWeight: '600',
+    lineHeight: 14,
+    textAlign: 'center',
+  },
+  eventSubtitle: {
+    fontSize: 9,
+    lineHeight: 11,
+    marginTop: 1,
   },
 });
 
@@ -630,82 +649,61 @@ const modalStyles = StyleSheet.create({
     paddingTop: 100,
     paddingHorizontal: 20,
   },
-  dropdownContainer: {
+  dropdown: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    paddingVertical: 20,
-    paddingHorizontal: 16,
     maxHeight: 400,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  dropdownTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  scheduleList: {
-    maxHeight: 250,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 8,
   },
   scheduleItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
-  scheduleNameButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-  },
-  activeScheduleItem: {
+  selectedScheduleItem: {
     backgroundColor: '#f0f8ff',
-    borderColor: '#007AFF',
   },
-  scheduleNameText: {
-    fontSize: 16,
-    color: '#333',
-    fontWeight: '500',
+  scheduleInfo: {
     flex: 1,
   },
-  activeScheduleText: {
+  scheduleName: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#333',
+    marginBottom: 4,
+  },
+  selectedScheduleName: {
     color: '#007AFF',
     fontWeight: '600',
   },
+  scheduleTime: {
+    fontSize: 14,
+    color: '#666',
+  },
   editButton: {
-    marginLeft: 8,
     padding: 8,
-    borderRadius: 6,
-    backgroundColor: '#f0f0f0',
+    marginLeft: 12,
   },
   createButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#007AFF',
-    paddingVertical: 14,
+    padding: 16,
+    backgroundColor: '#f8f9fa',
+    margin: 8,
     borderRadius: 8,
-    marginTop: 16,
-    gap: 8,
   },
   createButtonText: {
-    color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
+    color: '#007AFF',
+    fontWeight: '500',
+    marginLeft: 8,
   },
 });
 
@@ -717,62 +715,56 @@ const editModalStyles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
   },
-  container: {
+  modal: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    padding: 24,
     width: '100%',
-    maxWidth: 350,
+    maxWidth: 400,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
   title: {
     fontSize: 18,
     fontWeight: '600',
     color: '#333',
-    textAlign: 'center',
-    marginBottom: 20,
+  },
+  closeButton: {
+    padding: 4,
+  },
+  content: {
+    padding: 20,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: '#e0e0e0',
     borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    padding: 12,
     fontSize: 16,
-    color: '#333',
-    marginBottom: 24,
-  },
-  buttons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  button: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  cancelButton: {
-    backgroundColor: '#f0f0f0',
-  },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#666',
+    marginBottom: 20,
   },
   saveButton: {
     backgroundColor: '#007AFF',
+    padding: 15,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  saveButtonDisabled: {
+    backgroundColor: '#ccc',
   },
   saveButtonText: {
+    color: '#fff',
     fontSize: 16,
     fontWeight: '600',
-    color: '#fff',
   },
 });
