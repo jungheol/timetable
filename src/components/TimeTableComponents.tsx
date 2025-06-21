@@ -1,23 +1,29 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, ScrollView, TextInput, Modal, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Modal,
+  ScrollView,
+  TextInput,
+  TouchableWithoutFeedback,
+  Alert,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import moment from 'moment';
-import { Schedule, Event, Holiday } from '../services/DatabaseService';
 import ViewShot from 'react-native-view-shot';
-import ScreenshotButton from './ScreenshotButton'; // ✅ 추가
-import { 
-  getEventsForDateAndTime, 
-  getEventStyle, 
-  isToday,
-} from '../utils/timeTableUtils';
+import moment from 'moment';
 
-// 타입 정의
+import { Schedule, Event, Holiday } from '../services/DatabaseService';
+import ScreenshotButton from './ScreenshotButton';
+
+// Props 인터페이스들
 interface TimeTableHeaderProps {
   schedule: Schedule;
   onScheduleDropdownPress: () => void;
   captureRef: React.RefObject<ViewShot | null>;
   filename: string;
-  onRefreshHolidays: () => Promise<void>;
+  onRefreshHolidays: () => void;
   isLoadingHolidays: boolean;
 }
 
@@ -42,7 +48,6 @@ interface TimeTableGridProps {
   events: Event[];
   holidays: { [key: string]: Holiday };
   onCellPress: (date: moment.Moment, time: string) => void;
-  isLoading?: boolean;
 }
 
 interface ScheduleDropdownModalProps {
@@ -63,7 +68,34 @@ interface EditScheduleModalProps {
   onSave: () => void;
 }
 
-// ✅ 수정된 헤더 컴포넌트
+// 유틸리티 함수들
+const isToday = (date: moment.Moment): boolean => {
+  return date.isSame(moment(), 'day');
+};
+
+const getEventsForDateAndTime = (events: Event[], date: moment.Moment, time: string): Event[] => {
+  const dateStr = date.format('YYYY-MM-DD');
+  return events.filter(event => {
+    const eventDateMatches = event.event_date === dateStr;
+    const eventStartTime = moment(event.start_time, 'HH:mm');
+    const eventEndTime = moment(event.end_time, 'HH:mm');
+    const currentTime = moment(time, 'HH:mm');
+    const timeMatches = eventStartTime.isSameOrBefore(currentTime) && eventEndTime.isAfter(currentTime);
+    return eventDateMatches && timeMatches;
+  });
+};
+
+const getEventStyle = (category: string) => {
+  const styles = {
+    '학원': { backgroundColor: '#E3F2FD', color: '#1976D2' },
+    '학교': { backgroundColor: '#FFF3E0', color: '#F57C00' },
+    '개인공부': { backgroundColor: '#F3E5F5', color: '#7B1FA2' },
+    '기타': { backgroundColor: '#E8F5E8', color: '#388E3C' },
+  };
+  return styles[category as keyof typeof styles] || styles['기타'];
+};
+
+// 시간표 헤더 컴포넌트
 export const TimeTableHeader: React.FC<TimeTableHeaderProps> = ({
   schedule,
   onScheduleDropdownPress,
@@ -71,40 +103,44 @@ export const TimeTableHeader: React.FC<TimeTableHeaderProps> = ({
   filename,
   onRefreshHolidays,
   isLoadingHolidays,
-}) => (
-  <View style={headerStyles.container}>
-    <TouchableOpacity onPress={onScheduleDropdownPress}>
-      <View style={headerStyles.scheduleButton}>
-        <Text style={headerStyles.scheduleButtonText}>{schedule.name}</Text>
+}) => {
+  return (
+    <View style={headerStyles.container}>
+      <TouchableOpacity style={headerStyles.scheduleButton} onPress={onScheduleDropdownPress}>
+        <Text style={headerStyles.scheduleButtonText} numberOfLines={1}>
+          {schedule.name}
+        </Text>
         <Ionicons name="chevron-down" size={16} color="#007AFF" />
-      </View>
-    </TouchableOpacity>
-        
-    <View style={headerStyles.rightButtons}>
-      {/* ✅ ScreenshotButton 컴포넌트 사용 */}
-      <ScreenshotButton
-        captureRef={captureRef}
-        filename={filename}
-        size={24}
-        color="#007AFF"
-        style={headerStyles.button}
-        onCaptureStart={() => console.log('📸 Capture started')}
-        onCaptureEnd={() => console.log('📸 Capture ended')}
-        onSuccess={(uri: string) => console.log('📸 Capture success:', uri)}
-        onError={(error: any) => console.error('📸 Capture error:', error)}
-      />
-      
-      <TouchableOpacity onPress={onRefreshHolidays} disabled={isLoadingHolidays} style={headerStyles.button}>
-        <Ionicons 
-          name={isLoadingHolidays ? "refresh" : "calendar-outline"} 
-          size={24} 
-          color="#007AFF" 
-          style={isLoadingHolidays ? headerStyles.rotating : undefined}
-        />
       </TouchableOpacity>
+      
+      <View style={headerStyles.rightButtons}>
+        <TouchableOpacity 
+          style={[headerStyles.button, isLoadingHolidays && headerStyles.rotating]} 
+          onPress={onRefreshHolidays}
+          disabled={isLoadingHolidays}
+        >
+          <Ionicons 
+            name={isLoadingHolidays ? "refresh" : "calendar"} 
+            size={20} 
+            color="#007AFF" 
+          />
+        </TouchableOpacity>
+        
+        {/* ✅ 고급 ScreenshotButton 컴포넌트 사용 */}
+        <ScreenshotButton
+          captureRef={captureRef}
+          filename={filename}
+          size={20}
+          color="#007AFF"
+          style={headerStyles.button}
+          onCaptureStart={() => console.log('📸 Screenshot starting...')}
+          onSuccess={(uri) => console.log('✅ Screenshot saved:', uri)}
+          onError={(error) => console.error('❌ Screenshot error:', error)}
+        />
+      </View>
     </View>
-  </View>
-);
+  );
+};
 
 // 주간 네비게이션 컴포넌트
 export const WeekNavigation: React.FC<WeekNavigationProps> = ({
@@ -112,26 +148,36 @@ export const WeekNavigation: React.FC<WeekNavigationProps> = ({
   weekDays,
   onNavigateWeek,
   onGoToToday,
-}) => (
-  <View style={weekNavigationStyles.container}>
-    <TouchableOpacity onPress={() => onNavigateWeek('prev')}>
-      <Ionicons name="chevron-back" size={24} color="#007AFF" />
-    </TouchableOpacity>
-    
-    <TouchableOpacity onPress={onGoToToday} style={weekNavigationStyles.titleContainer}>
-      <Text style={weekNavigationStyles.title}>
-        {currentWeek.format('YYYY년 MM월')}
-      </Text>
-      <Text style={weekNavigationStyles.subtitle}>
-        {weekDays[0]?.format('MM.DD')} - {weekDays[weekDays.length - 1]?.format('MM.DD')}
-      </Text>
-    </TouchableOpacity>
-    
-    <TouchableOpacity onPress={() => onNavigateWeek('next')}>
-      <Ionicons name="chevron-forward" size={24} color="#007AFF" />
-    </TouchableOpacity>
-  </View>
-);
+  isLoading = false,
+}) => {
+  const formatWeekRange = () => {
+    if (weekDays.length === 0) return '';
+    const start = weekDays[0];
+    const end = weekDays[weekDays.length - 1];
+    return `${start.format('M.D')} - ${end.format('M.D')}`;
+  };
+
+  return (
+    <View style={weekNavigationStyles.container}>
+      <TouchableOpacity onPress={() => onNavigateWeek('prev')} disabled={isLoading}>
+        <Ionicons name="chevron-back" size={24} color={isLoading ? "#ccc" : "#007AFF"} />
+      </TouchableOpacity>
+      
+      <TouchableOpacity style={weekNavigationStyles.titleContainer} onPress={onGoToToday}>
+        <Text style={weekNavigationStyles.title}>
+          {currentWeek.format('YYYY년 M월')}
+        </Text>
+        <Text style={weekNavigationStyles.subtitle}>
+          {formatWeekRange()}
+        </Text>
+      </TouchableOpacity>
+      
+      <TouchableOpacity onPress={() => onNavigateWeek('next')} disabled={isLoading}>
+        <Ionicons name="chevron-forward" size={24} color={isLoading ? "#ccc" : "#007AFF"} />
+      </TouchableOpacity>
+    </View>
+  );
+};
 
 // 날짜 헤더 컴포넌트
 export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holidays }) => (
@@ -139,22 +185,22 @@ export const DateHeader: React.FC<DateHeaderProps> = ({ weekDays, dayWidth, holi
     <View style={[dateHeaderStyles.timeColumn, { width: dayWidth }]} />
     {weekDays.map((day, index) => {
       const holiday = holidays[day.format('YYYY-MM-DD')];
+      const today = isToday(day);
+      
       return (
         <View key={index} style={[dateHeaderStyles.dayColumn, { width: dayWidth }]}>
-          <Text style={[
-            dateHeaderStyles.dayName, 
-            isToday(day) && dateHeaderStyles.todayText,
-            holiday && dateHeaderStyles.holidayText
-          ]}>
+          <Text style={dateHeaderStyles.dayName}>
             {day.format('ddd')}
           </Text>
           <View style={dateHeaderStyles.dayDateContainer}>
-            <Text style={[
-              dateHeaderStyles.dayDate, 
-              isToday(day) && dateHeaderStyles.todayDate,
-              holiday && dateHeaderStyles.holidayDate
-            ]}>
-              {day.format('DD')}
+            <Text
+              style={[
+                dateHeaderStyles.dayDate,
+                today && dateHeaderStyles.todayDate,
+                holiday && !today && dateHeaderStyles.holidayDate,
+              ]}
+            >
+              {day.format('D')}
             </Text>
             {holiday && (
               <View style={dateHeaderStyles.holidayIndicator}>
@@ -231,7 +277,7 @@ export const TimeTableGrid: React.FC<TimeTableGridProps> = ({
   </ScrollView>
 );
 
-// 스케줄 드롭다운 모달 컴포넌트
+// ✅ 수정된 스케줄 드롭다운 모달 컴포넌트 (플리커링 방지)
 export const ScheduleDropdownModal: React.FC<ScheduleDropdownModalProps> = ({
   visible,
   onClose,
@@ -240,56 +286,111 @@ export const ScheduleDropdownModal: React.FC<ScheduleDropdownModalProps> = ({
   onScheduleChange,
   onEditSchedule,
   onCreateNew,
-}) => (
-  <Modal
-    visible={visible}
-    transparent={true}
-    animationType="fade"
-    onRequestClose={onClose}
-  >
-    <TouchableOpacity style={modalStyles.overlay} onPress={onClose}>
-      <View style={modalStyles.dropdownContainer}>
-        <Text style={modalStyles.dropdownTitle}>스케줄 선택</Text>
-        
-        <ScrollView style={modalStyles.scheduleList} showsVerticalScrollIndicator={false}>
-          {schedules.map((scheduleItem) => (
-            <View key={scheduleItem.id} style={modalStyles.scheduleItem}>
-              <TouchableOpacity
-                style={[
-                  modalStyles.scheduleNameButton,
-                  scheduleItem.id === currentSchedule.id && modalStyles.activeScheduleItem
-                ]}
-                onPress={() => onScheduleChange(scheduleItem)}
-              >
-                <Text style={[
-                  modalStyles.scheduleNameText,
-                  scheduleItem.id === currentSchedule.id && modalStyles.activeScheduleText
-                ]}>
-                  {scheduleItem.name}
-                </Text>
-                {scheduleItem.id === currentSchedule.id && (
-                  <Ionicons name="checkmark" size={20} color="#007AFF" />
-                )}
-              </TouchableOpacity>
+}) => {
+  // ✅ 중복 호출 방지를 위한 플래그
+  const [isClosing, setIsClosing] = useState(false);
+
+  // ✅ 모달이 열릴 때마다 상태 초기화
+  useEffect(() => {
+    if (visible) {
+      setIsClosing(false);
+    }
+  }, [visible]);
+
+  // ✅ 외부 터치 시 모달 닫기 (중복 방지)
+  const handleOverlayPress = useCallback(() => {
+    if (isClosing) return; // 이미 닫는 중이면 무시
+    
+    setIsClosing(true);
+    onClose();
+  }, [isClosing, onClose]);
+
+  // ✅ 모달 내부 터치 시 이벤트 전파 방지
+  const handleModalContentPress = useCallback((event: any) => {
+    event.stopPropagation(); // 이벤트 전파 방지
+  }, []);
+
+  // ✅ 스케줄 변경 시 모달 닫기
+  const handleScheduleChange = useCallback((schedule: Schedule) => {
+    if (isClosing) return; // 이미 닫는 중이면 무시
+    
+    setIsClosing(true);
+    onScheduleChange(schedule);
+  }, [isClosing, onScheduleChange]);
+
+  // ✅ 스케줄 편집 시 모달 닫기
+  const handleEditSchedule = useCallback((schedule: Schedule) => {
+    if (isClosing) return; // 이미 닫는 중이면 무시
+    
+    setIsClosing(true);
+    onEditSchedule(schedule);
+  }, [isClosing, onEditSchedule]);
+
+  // ✅ 새 스케줄 생성 시 모달 닫기
+  const handleCreateNew = useCallback(() => {
+    if (isClosing) return; // 이미 닫는 중이면 무시
+    
+    setIsClosing(true);
+    onCreateNew();
+  }, [isClosing, onCreateNew]);
+
+  return (
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={handleOverlayPress}
+    >
+      {/* ✅ TouchableWithoutFeedback으로 변경하여 더 정확한 터치 감지 */}
+      <TouchableWithoutFeedback onPress={handleOverlayPress}>
+        <View style={modalStyles.overlay}>
+          {/* ✅ 모달 컨텐츠 영역 - 터치 이벤트 전파 방지 */}
+          <TouchableWithoutFeedback onPress={handleModalContentPress}>
+            <View style={modalStyles.dropdownContainer}>
+              <Text style={modalStyles.dropdownTitle}>스케줄 선택</Text>
               
-              <TouchableOpacity
-                style={modalStyles.editButton}
-                onPress={() => onEditSchedule(scheduleItem)}
-              >
-                <Ionicons name="create-outline" size={20} color="#666" />
+              <ScrollView style={modalStyles.scheduleList} showsVerticalScrollIndicator={false}>
+                {schedules.map((scheduleItem) => (
+                  <View key={scheduleItem.id} style={modalStyles.scheduleItem}>
+                    <TouchableOpacity
+                      style={[
+                        modalStyles.scheduleNameButton,
+                        scheduleItem.id === currentSchedule.id && modalStyles.activeScheduleItem
+                      ]}
+                      onPress={() => handleScheduleChange(scheduleItem)}
+                    >
+                      <Text style={[
+                        modalStyles.scheduleNameText,
+                        scheduleItem.id === currentSchedule.id && modalStyles.activeScheduleText
+                      ]}>
+                        {scheduleItem.name}
+                      </Text>
+                      {scheduleItem.id === currentSchedule.id && (
+                        <Ionicons name="checkmark" size={20} color="#007AFF" />
+                      )}
+                    </TouchableOpacity>
+                    
+                    <TouchableOpacity
+                      style={modalStyles.editButton}
+                      onPress={() => handleEditSchedule(scheduleItem)}
+                    >
+                      <Ionicons name="create-outline" size={20} color="#666" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+              
+              <TouchableOpacity style={modalStyles.createButton} onPress={handleCreateNew}>
+                <Ionicons name="add" size={20} color="#fff" />
+                <Text style={modalStyles.createButtonText}>새 스케줄 만들기</Text>
               </TouchableOpacity>
             </View>
-          ))}
-        </ScrollView>
-        
-        <TouchableOpacity style={modalStyles.createButton} onPress={onCreateNew}>
-          <Ionicons name="add" size={20} color="#fff" />
-          <Text style={modalStyles.createButtonText}>새 스케줄 만들기</Text>
-        </TouchableOpacity>
-      </View>
-    </TouchableOpacity>
-  </Modal>
-);
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+  );
+};
 
 // 스케줄 편집 모달 컴포넌트
 export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
