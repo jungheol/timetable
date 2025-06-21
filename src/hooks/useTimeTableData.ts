@@ -3,7 +3,17 @@ import moment from 'moment';
 import DatabaseService, { Event, Schedule, Holiday } from '../services/DatabaseService';
 import HolidayService from '../services/HolidayService';
 
-// ✅ 이벤트 캐시 인터페이스
+// ✅ 통합된 상태 인터페이스
+interface TimeTableState {
+  currentWeek: moment.Moment;
+  events: Event[];
+  schedule: Schedule | null;
+  holidays: { [key: string]: Holiday };
+  isLoading: boolean;
+  loadingMessage: string;
+}
+
+// ✅ 이벤트 캐시 인터페이스 (기존 유지)
 interface EventCache {
   [key: string]: {
     events: Event[];
@@ -11,22 +21,59 @@ interface EventCache {
   };
 }
 
-// ✅ 캐시 유효 시간 (5분)
-const CACHE_DURATION = 5 * 60 * 1000;
+const CACHE_DURATION = 5 * 60 * 1000; // 5분
 
 export const useTimeTableData = () => {
-  const [currentWeek, setCurrentWeek] = useState(moment());
-  const [events, setEvents] = useState<Event[]>([]);
-  const [schedule, setSchedule] = useState<Schedule | null>(null);
-  const [holidays, setHolidays] = useState<{ [key: string]: Holiday }>({});
-  const [isLoadingHolidays, setIsLoadingHolidays] = useState(false);
-  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
-  
-  // ✅ 이벤트 캐시 및 프리로딩을 위한 ref
+  // ✅ 통합된 상태 관리
+  const [state, setState] = useState<TimeTableState>({
+    currentWeek: moment(),
+    events: [],
+    schedule: null,
+    holidays: {},
+    isLoading: false,
+    loadingMessage: ''
+  });
+
+  // 캐시 관련 ref들 (기존 유지)
   const eventCacheRef = useRef<EventCache>({});
   const preloadingRef = useRef<Set<string>>(new Set());
+  const loadingRef = useRef<boolean>(false);
 
-  // 새 스케줄에 맞는 포커스 주간 계산
+  // ✅ 배치 상태 업데이트 함수
+  const updateStateBatch = useCallback((updates: Partial<TimeTableState>) => {
+    setState(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  // ✅ 개별 setter들 (호환성을 위해 유지)
+  const setCurrentWeek = useCallback((week: moment.Moment) => {
+    updateStateBatch({ currentWeek: week });
+  }, [updateStateBatch]);
+
+  const setSchedule = useCallback((schedule: Schedule | null) => {
+    updateStateBatch({ schedule });
+  }, [updateStateBatch]);
+
+  // 캐시 관련 함수들 (기존 로직 유지)
+  const getCacheKey = useCallback((scheduleId: number, startDate: string, endDate: string) => {
+    return `${scheduleId}_${startDate}_${endDate}`;
+  }, []);
+
+  const getEventsFromCache = useCallback((cacheKey: string): Event[] | null => {
+    const cached = eventCacheRef.current[cacheKey];
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      return cached.events;
+    }
+    return null;
+  }, []);
+
+  const saveEventsToCache = useCallback((cacheKey: string, events: Event[]) => {
+    eventCacheRef.current[cacheKey] = {
+      events,
+      timestamp: Date.now()
+    };
+  }, []);
+
+  // ✅ 새 스케줄에 맞는 포커스 주간 계산
   const calculateFocusWeek = useCallback((newSchedule: Schedule): moment.Moment => {
     const today = moment();
     const todayOfWeek = today.day();
@@ -39,133 +86,133 @@ export const useTimeTableData = () => {
     });
 
     if (newSchedule.show_weekend) {
-      console.log('📅 Weekend schedule - showing current week');
       return today.clone();
     }
     
     if (todayOfWeek === 0 || todayOfWeek === 6) {
       const nextMonday = today.clone().add(1, 'week').startOf('isoWeek');
-      console.log('📅 Weekend day + weekday-only schedule - showing next Monday week:', nextMonday.format('YYYY-MM-DD'));
       return nextMonday;
     }
     
-    console.log('📅 Weekday + weekday-only schedule - showing current week');
     return today.clone();
   }, []);
 
-  const loadSchedule = useCallback(async () => {
-    try {
-      const activeSchedule = await DatabaseService.getActiveSchedule();
-      setSchedule(activeSchedule);
-    } catch (error) {
-      console.error('Error loading schedule:', error);
-    }
-  }, []);
-
-  // ✅ 캐시 키 생성
-  const getCacheKey = useCallback((scheduleId: number, startDate: string, endDate: string) => {
-    return `${scheduleId}-${startDate}-${endDate}`;
-  }, []);
-
-  // ✅ 캐시에서 이벤트 가져오기
-  const getEventsFromCache = useCallback((cacheKey: string): Event[] | null => {
-    const cached = eventCacheRef.current[cacheKey];
-    if (!cached) return null;
+  // ✅ 통합된 데이터 로딩 함수 (배치 처리)
+  const loadAllData = useCallback(async (
+    targetSchedule?: Schedule, 
+    targetWeek?: moment.Moment,
+    showLoading: boolean = true
+  ) => {
+    const sched = targetSchedule || state.schedule;
+    const week = targetWeek || state.currentWeek;
     
-    const isExpired = Date.now() - cached.timestamp > CACHE_DURATION;
-    if (isExpired) {
-      delete eventCacheRef.current[cacheKey];
-      return null;
-    }
-    
-    console.log('🚀 Cache hit for:', cacheKey);
-    return cached.events;
-  }, []);
+    if (!sched || loadingRef.current) return;
 
-  // ✅ 캐시에 이벤트 저장
-  const saveEventsToCache = useCallback((cacheKey: string, events: Event[]) => {
-    eventCacheRef.current[cacheKey] = {
-      events: [...events],
-      timestamp: Date.now()
-    };
-    console.log('💾 Cached events for:', cacheKey, 'Count:', events.length);
-  }, []);
-
-  // ✅ 최적화된 이벤트 로딩 - 캐시 우선 + 즉시 로딩
-  const loadEvents = useCallback(async (targetWeek?: moment.Moment, targetSchedule?: Schedule) => {
-    const week = targetWeek || currentWeek;
-    const sched = targetSchedule || schedule;
-    
-    if (!sched) {
-      console.log('⚠️ TimeTable: No schedule available, skipping event load');
-      setEvents([]);
-      return;
-    }
+    loadingRef.current = true;
 
     try {
+      if (showLoading) {
+        updateStateBatch({ 
+          isLoading: true, 
+          loadingMessage: '데이터 로딩 중...' 
+        });
+      }
+
+      // 주간 데이터 계산
       const weekDays = getWeekDays(sched, week);
       const startDate = weekDays[0].format('YYYY-MM-DD');
       const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
-      const cacheKey = getCacheKey(sched.id!, startDate, endDate);
       
-      console.log('🔍 TimeTable: Loading events for period:', startDate, 'to', endDate);
-      
-      // ✅ 캐시 확인
-      const cachedEvents = getEventsFromCache(cacheKey);
-      if (cachedEvents) {
-        setEvents(cachedEvents);
-        setIsLoadingEvents(false);
-        
-        // 백그라운드에서 데이터 갱신 (optional)
-        setTimeout(async () => {
-          try {
-            const freshEvents = await DatabaseService.getEventsWithRecurring(sched.id!, startDate, endDate);
-            if (JSON.stringify(freshEvents) !== JSON.stringify(cachedEvents)) {
-              console.log('🔄 Background refresh: Data changed, updating cache');
-              saveEventsToCache(cacheKey, freshEvents);
-              setEvents(freshEvents);
-            }
-          } catch (error) {
-            console.warn('Background refresh failed:', error);
-          }
-        }, 100);
-        
-        return;
-      }
-      
-      // ✅ 캐시 미스 - 즉시 로딩
-      setIsLoadingEvents(true);
-      const weekEvents = await DatabaseService.getEventsWithRecurring(sched.id!, startDate, endDate);
-      
-      console.log('🔍 TimeTable: Events loaded:', weekEvents.length);
-      console.log('🔍 TimeTable: Events breakdown:', {
-        regular: weekEvents.filter(e => !e.is_recurring).length,
-        recurring: weekEvents.filter(e => e.is_recurring).length,
-        withExceptions: weekEvents.filter(e => !!(e as any).exception_id).length
+      console.log('🔄 Loading data batch:', {
+        schedule: sched.name,
+        period: `${startDate} ~ ${endDate}`,
+        showLoading
       });
 
-      // ✅ 즉시 UI 업데이트
-      setEvents(weekEvents);
-      setIsLoadingEvents(false);
-      
-      // ✅ 캐시에 저장
-      saveEventsToCache(cacheKey, weekEvents);
-      
-      // ✅ 인접 주간 프리로딩 (백그라운드)
-      preloadAdjacentWeeks(sched, week);
-      
-    } catch (error) {
-      console.error('❌ TimeTable: Error loading events:', error);
-      setEvents([]);
-      setIsLoadingEvents(false);
-    }
-  }, [schedule, currentWeek, getCacheKey, getEventsFromCache, saveEventsToCache]);
+      // 캐시 확인
+      const cacheKey = getCacheKey(sched.id!, startDate, endDate);
+      const cachedEvents = getEventsFromCache(cacheKey);
 
-  // ✅ 인접 주간 프리로딩
+      // 병렬로 데이터 로드
+      const [events, holidayMap] = await Promise.all([
+        cachedEvents || DatabaseService.getEventsWithRecurring(sched.id!, startDate, endDate),
+        loadHolidaysForPeriod(startDate, endDate)
+      ]);
+
+      // 캐시에 저장 (새로 로드한 경우)
+      if (!cachedEvents) {
+        saveEventsToCache(cacheKey, events);
+      }
+
+      // ✅ 한 번에 모든 상태 업데이트 (깜빡임 방지)
+      updateStateBatch({
+        events,
+        holidays: holidayMap,
+        isLoading: false,
+        loadingMessage: '',
+        ...(targetSchedule && { schedule: targetSchedule }),
+        ...(targetWeek && { currentWeek: targetWeek })
+      });
+
+      console.log('✅ Data batch loaded successfully:', {
+        eventsCount: events.length,
+        holidaysCount: Object.keys(holidayMap).length
+      });
+
+      // 백그라운드 프리로딩
+      if (!cachedEvents) {
+        setTimeout(() => preloadAdjacentWeeks(sched, week), 100);
+      }
+
+    } catch (error) {
+      console.error('❌ Error loading data batch:', error);
+      updateStateBatch({
+        isLoading: false,
+        loadingMessage: '',
+        events: [],
+        holidays: {}
+      });
+    } finally {
+      loadingRef.current = false;
+    }
+  }, [state.schedule, state.currentWeek, getCacheKey, getEventsFromCache, saveEventsToCache, updateStateBatch]);
+
+  // 공휴일 로딩 함수
+  const loadHolidaysForPeriod = useCallback(async (startDate: string, endDate: string) => {
+    try {
+      const periodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
+      const holidayMap: { [key: string]: Holiday } = {};
+      periodHolidays.forEach(holiday => {
+        holidayMap[holiday.date] = holiday;
+      });
+      return holidayMap;
+    } catch (error) {
+      console.error('❌ Error loading holidays:', error);
+      return {};
+    }
+  }, []);
+
+  // 주간 데이터 계산 함수
+  const getWeekDays = useCallback((schedule: Schedule, week: moment.Moment) => {
+    const startOfWeek = schedule.show_weekend
+      ? week.clone().startOf('week')
+      : week.clone().startOf('isoWeek');
+    
+    const days = [];
+    const dayCount = schedule.show_weekend ? 7 : 5;
+    
+    for (let i = 0; i < dayCount; i++) {
+      days.push(startOfWeek.clone().add(i, 'day'));
+    }
+    
+    return days;
+  }, []);
+
+  // 인접 주간 프리로딩 (기존 로직 유지)
   const preloadAdjacentWeeks = useCallback(async (sched: Schedule, week: moment.Moment) => {
     const preloadWeeks = [
-      week.clone().subtract(1, 'week'), // 이전 주
-      week.clone().add(1, 'week'),      // 다음 주
+      week.clone().subtract(1, 'week'),
+      week.clone().add(1, 'week'),
     ];
     
     for (const preloadWeek of preloadWeeks) {
@@ -174,176 +221,125 @@ export const useTimeTableData = () => {
       const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
       const cacheKey = getCacheKey(sched.id!, startDate, endDate);
       
-      // 이미 캐시되어 있거나 프리로딩 중이면 스킵
       if (getEventsFromCache(cacheKey) || preloadingRef.current.has(cacheKey)) {
         continue;
       }
       
       preloadingRef.current.add(cacheKey);
       
-      // 백그라운드에서 프리로딩
       setTimeout(async () => {
         try {
           console.log('🔮 Preloading week:', startDate, 'to', endDate);
           const events = await DatabaseService.getEventsWithRecurring(sched.id!, startDate, endDate);
           saveEventsToCache(cacheKey, events);
-          console.log('✅ Preloaded:', events.length, 'events for', startDate);
         } catch (error) {
-          console.warn('⚠️ Preload failed for', startDate, ':', error);
+          console.warn('❌ Preload failed:', error);
         } finally {
           preloadingRef.current.delete(cacheKey);
         }
-      }, 50);
+      }, 500);
     }
-  }, [getCacheKey, getEventsFromCache, saveEventsToCache]);
+  }, [getCacheKey, getEventsFromCache, saveEventsToCache, getWeekDays]);
 
-  // ✅ 즉시 로딩 - useEffect에서 딜레이 제거
-  useEffect(() => {
-    if (schedule && currentWeek) {
-      console.log('🔄 TimeTable: Auto-loading events (immediate)');
-      loadEvents(); // setTimeout 제거
+  // ✅ 개별 함수들 (호환성을 위해 유지하되 내부적으로는 loadAllData 사용)
+  const loadSchedule = useCallback(async () => {
+    try {
+      const activeSchedule = await DatabaseService.getActiveSchedule();
+      if (activeSchedule) {
+        await loadAllData(activeSchedule, state.currentWeek, false);
+      }
+    } catch (error) {
+      console.error('Error loading schedule:', error);
     }
-  }, [schedule?.id, currentWeek.format('YYYY-MM-DD')]);
+  }, [loadAllData, state.currentWeek]);
 
-  // ✅ 캐시 무효화 - 강제 새로고침
+  const loadEvents = useCallback(async () => {
+    if (state.schedule) {
+      await loadAllData(state.schedule, state.currentWeek, false);
+    }
+  }, [loadAllData, state.schedule, state.currentWeek]);
+
+  const forceRefreshEvents = useCallback(async () => {
+    // 캐시 무효화 후 강제 리로드
+    eventCacheRef.current = {};
+    if (state.schedule) {
+      await loadAllData(state.schedule, state.currentWeek, true);
+    }
+  }, [loadAllData, state.schedule, state.currentWeek]);
+
   const invalidateCache = useCallback(() => {
-    console.log('🗑️ Invalidating event cache');
     eventCacheRef.current = {};
     preloadingRef.current.clear();
   }, []);
 
-  // ✅ 강제 새로고침 - 딜레이 제거
-  const forceRefreshEvents = useCallback(async () => {
-    console.log('🔄 TimeTable: Force refreshing events (immediate)');
-    
-    // 캐시 무효화
-    invalidateCache();
-    
-    // 즉시 로드
-    await loadEvents();
-  }, [loadEvents, invalidateCache]);
-
   const loadHolidaysForCurrentPeriod = useCallback(async () => {
-    if (!schedule) return;
-
-    try {
-      const weekDays = getWeekDays(schedule, currentWeek);
-      const startDate = weekDays[0].format('YYYY-MM-DD');
-      const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
-      
-      console.log(`🇰🇷 Loading holidays for period: ${startDate} ~ ${endDate}`);
-      
-      const periodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
-      
-      const holidayMap: { [key: string]: Holiday } = {};
-      periodHolidays.forEach(holiday => {
-        holidayMap[holiday.date] = holiday;
-      });
-      
-      setHolidays(holidayMap);
-      console.log(`🇰🇷 Loaded ${periodHolidays.length} holidays for period`);
-      
-      if (periodHolidays.length === 0) {
-        const years = Array.from(new Set(weekDays.map(day => day.year())));
-        loadMissingHolidaysQuietly(years);
-      }
-    } catch (error) {
-      console.error('❌ Error loading holidays for period:', error);
-    }
-  }, [schedule, currentWeek]);
-
-  const loadMissingHolidaysQuietly = useCallback(async (years: number[]) => {
-    try {
-      setTimeout(async () => {
-        for (const year of years) {
-          const existingHolidays = await DatabaseService.getHolidaysByYear(year);
-          if (existingHolidays.length === 0) {
-            console.log(`🇰🇷 Quietly loading missing holidays for year ${year}...`);
-            try {
-              await HolidayService.getHolidaysForYear(year);
-              
-              if (schedule) {
-                const weekDays = getWeekDays(schedule, currentWeek);
-                const startDate = weekDays[0].format('YYYY-MM-DD');
-                const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
-                
-                const updatedPeriodHolidays = await DatabaseService.getHolidaysInRange(startDate, endDate);
-                
-                if (updatedPeriodHolidays.length > 0) {
-                  const holidayMap: { [key: string]: Holiday } = {};
-                  updatedPeriodHolidays.forEach(holiday => {
-                    holidayMap[holiday.date] = holiday;
-                  });
-                  
-                  setHolidays(holidayMap);
-                  console.log(`🇰🇷 Quietly updated holidays: ${updatedPeriodHolidays.length}`);
-                }
-              }
-            } catch (error) {
-              console.warn(`🇰🇷 Failed to quietly load holidays for ${year}:`, error);
-            }
-          }
-        }
-      }, 50); // 딜레이 단축
-    } catch (error) {
-      console.error('❌ Error in quiet holiday loading:', error);
-    }
-  }, [schedule, currentWeek]);
-
-  const handleRefreshHolidays = useCallback(async () => {
-    if (isLoadingHolidays) return;
+    if (!state.schedule) return;
     
+    const weekDays = getWeekDays(state.schedule, state.currentWeek);
+    const startDate = weekDays[0].format('YYYY-MM-DD');
+    const endDate = weekDays[weekDays.length - 1].format('YYYY-MM-DD');
+    
+    const holidayMap = await loadHolidaysForPeriod(startDate, endDate);
+    updateStateBatch({ holidays: holidayMap });
+  }, [state.schedule, state.currentWeek, getWeekDays, loadHolidaysForPeriod, updateStateBatch]);
+
+  // 공휴일 새로고침
+  const handleRefreshHolidays = useCallback(async (): Promise<number | undefined> => {
     try {
-      setIsLoadingHolidays(true);
-      console.log('🔄 Manual holiday update requested...');
-      await HolidayService.forceUpdateCurrentYears();
-      await loadHolidaysForCurrentPeriod();
+      updateStateBatch({ isLoading: true, loadingMessage: '공휴일 업데이트 중...' });
       
       const currentYear = new Date().getFullYear();
+      await HolidayService.forceUpdateCurrentYears();
+      
       const currentYearHolidays = await DatabaseService.getHolidaysByYear(currentYear);
+      
+      // 현재 기간의 공휴일 다시 로드
+      await loadHolidaysForCurrentPeriod();
+      
+      updateStateBatch({ isLoading: false, loadingMessage: '' });
       
       return currentYearHolidays.length;
     } catch (error) {
-      console.error('❌ Holiday update error:', error);
+      console.error('❌ Holiday refresh error:', error);
+      updateStateBatch({ isLoading: false, loadingMessage: '' });
       throw error;
-    } finally {
-      setIsLoadingHolidays(false);
     }
-  }, [isLoadingHolidays, loadHolidaysForCurrentPeriod]);
+  }, [loadHolidaysForCurrentPeriod, updateStateBatch]);
 
-  // ✅ 주간 네비게이션 - 즉시 적용 + 캐시 활용
+  // 주간 네비게이션
   const navigateWeek = useCallback((direction: 'prev' | 'next') => {
     const newWeek = direction === 'prev' 
-      ? currentWeek.clone().subtract(1, 'week')
-      : currentWeek.clone().add(1, 'week');
+      ? state.currentWeek.clone().subtract(1, 'week')
+      : state.currentWeek.clone().add(1, 'week');
     
-    console.log('📅 TimeTable: Navigating week (immediate):', direction, 'to', newWeek.format('YYYY-MM-DD'));
-    
-    // ✅ 즉시 주간 변경 (useEffect가 이벤트 로딩 처리)
-    setCurrentWeek(newWeek);
-  }, [currentWeek]);
-
-  // ✅ 오늘로 이동 - 즉시 적용
-  const goToToday = useCallback(() => {
-    if (schedule) {
-      const focusWeek = calculateFocusWeek(schedule);
-      console.log('📅 TimeTable: Going to today week (immediate):', focusWeek.format('YYYY-MM-DD'));
-      setCurrentWeek(focusWeek);
-    } else {
-      setCurrentWeek(moment());
+    if (state.schedule) {
+      loadAllData(state.schedule, newWeek, false);
     }
-  }, [schedule, calculateFocusWeek]);
+  }, [state.currentWeek, state.schedule, loadAllData]);
+
+  const goToToday = useCallback(() => {
+    if (state.schedule) {
+      const focusWeek = calculateFocusWeek(state.schedule);
+      loadAllData(state.schedule, focusWeek, false);
+    } else {
+      updateStateBatch({ currentWeek: moment() });
+    }
+  }, [state.schedule, calculateFocusWeek, loadAllData, updateStateBatch]);
 
   return {
     // 상태
-    currentWeek,
-    events,
-    schedule,
-    holidays,
-    isLoadingHolidays,
-    isLoadingEvents,
+    currentWeek: state.currentWeek,
+    events: state.events,
+    schedule: state.schedule,
+    holidays: state.holidays,
+    isLoadingHolidays: state.isLoading,
+    isLoadingEvents: state.isLoading,
     
-    // 액션
+    // 새로운 통합 함수
+    loadAllData,
+    updateStateBatch,
+    
+    // 기존 호환성 함수들
     setCurrentWeek,
     setSchedule,
     loadSchedule,
@@ -356,20 +352,4 @@ export const useTimeTableData = () => {
     navigateWeek,
     goToToday,
   };
-};
-
-// 유틸리티 함수
-const getWeekDays = (schedule: Schedule, currentWeek: moment.Moment) => {
-  const startOfWeek = schedule?.show_weekend
-    ? currentWeek.clone().startOf('week')
-    : currentWeek.clone().startOf('isoWeek');
-  
-  const days = [];
-  const dayCount = schedule?.show_weekend ? 7 : 5;
-  
-  for (let i = 0; i < dayCount; i++) {
-    days.push(startOfWeek.clone().add(i, 'day'));
-  }
-  
-  return days;
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,6 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import ViewShot from 'react-native-view-shot';
 import moment from 'moment';
 import DatabaseService, { Schedule } from '../services/DatabaseService';
-import ScreenshotButton from '../components/ScreenshotButton';
 import { RootStackParamList } from '../../App';
 
 // 분리된 훅들
@@ -20,7 +19,7 @@ import { useTimeTableData } from '../hooks/useTimeTableData';
 import { useScheduleManagement } from '../hooks/useScheduleManagement';
 import { useTimeTableFocus } from '../hooks/useTimeTableFocus';
 
-// 분리된 컴포넌트들
+// 분리된 컴포넌트들 (나중에 React.memo 적용)
 import {
   TimeTableHeader,
   WeekNavigation,
@@ -45,7 +44,7 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
   // 📸 스크린샷을 위한 ref
   const captureRef = useRef<ViewShot>(null);
 
-  // ✅ 분리된 훅들 사용
+  // ✅ 통합된 상태 관리 훅 사용
   const {
     currentWeek,
     events,
@@ -53,13 +52,11 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     holidays,
     isLoadingHolidays,
     isLoadingEvents,
-    setCurrentWeek,
-    setSchedule,
+    loadAllData,
+    updateStateBatch,
     loadSchedule,
-    loadEvents,
     forceRefreshEvents,
     invalidateCache,
-    loadHolidaysForCurrentPeriod,
     handleRefreshHolidays,
     calculateFocusWeek,
     navigateWeek,
@@ -81,26 +78,63 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     closeScheduleDropdown,
   } = useScheduleManagement();
 
-  // 화면 포커스 관리
+  // ✅ 화면 포커스 관리 (간소화된 props)
   useTimeTableFocus({
     schedule,
-    currentWeek,
-    setSchedule,
-    setCurrentWeek,
+    loadAllData,
     calculateFocusWeek,
     loadAllSchedules,
-    loadEvents,
-    loadHolidaysForCurrentPeriod,
   });
 
-  // 초기 로드
-  useEffect(() => {
-    loadSchedule();
-    loadAllSchedules();
-  }, []);
+  // ✅ 계산된 값들 메모이제이션 (재계산 방지)
+  const { weekDays, timeSlots, dayWidth } = useMemo(() => {
+    if (!schedule) {
+      return { weekDays: [], timeSlots: [], dayWidth: 0 };
+    }
 
-  // ✅ 핸들러들
-  const handleCellPress = (date: moment.Moment, time: string) => {
+    return {
+      weekDays: getWeekDays(schedule, currentWeek),
+      timeSlots: getTimeSlots(schedule),
+      dayWidth: calculateDayWidth(screenWidth, schedule)
+    };
+  }, [
+    schedule?.id,
+    schedule?.show_weekend,
+    schedule?.start_time,
+    schedule?.end_time,
+    schedule?.time_unit,
+    currentWeek.format('YYYY-MM-DD'),
+    screenWidth
+  ]);
+
+  // ✅ 초기 로드 (한 번만 실행)
+  useEffect(() => {
+    const initializeData = async () => {
+      console.log('🚀 [TimeTable] Initializing...');
+      
+      // 병렬로 실행
+      await Promise.all([
+        loadSchedule(),
+        loadAllSchedules()
+      ]);
+    };
+    
+    initializeData();
+  }, []); // 빈 의존성 배열로 한 번만 실행
+
+  // ✅ 스케줄이나 주간이 변경되었을 때만 데이터 로드
+  useEffect(() => {
+    if (schedule && weekDays.length > 0) {
+      console.log('🔄 [TimeTable] Schedule or week changed, loading data...');
+      loadAllData(schedule, currentWeek, false);
+    }
+  }, [
+    schedule?.id, 
+    currentWeek.format('YYYY-MM-DD')
+  ]); // 필수 의존성만 포함
+
+  // ✅ 이벤트 핸들러들 메모이제이션
+  const handleCellPress = useCallback((date: moment.Moment, time: string) => {
     const dateStr = date.format('YYYY-MM-DD');
     const cellEvents = events.filter(event => {
       const eventDateMatches = event.event_date === dateStr;
@@ -121,38 +155,42 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
       selectedTime: time,
       scheduleId: schedule!.id!,
       onSave: () => {
-        // ✅ 즉시 캐시 무효화 + 강제 새로고침
+        // ✅ 저장 후 즉시 캐시 무효화 + 강제 새로고침
         console.log('🔄 Event saved, invalidating cache and refreshing');
         invalidateCache();
         forceRefreshEvents();
       },
     });
-  };
+  }, [events, schedule, navigation, invalidateCache, forceRefreshEvents]);
 
-  const handleCreateNewSchedule = () => {
+  const handleCreateNewSchedule = useCallback(() => {
     closeScheduleDropdown();
     navigation.navigate('InitialSetupFromMain', {
       isFromModal: true
     });
-  };
+  }, [closeScheduleDropdown, navigation]);
 
-  // ✅ 스케줄 변경 - 모든 딜레이 제거
-  const onScheduleChanged = (newSchedule: Schedule) => {
-    console.log('🔄 TimeTable: Schedule changing to:', newSchedule.name, '(immediate)');
+  // ✅ 스케줄 변경 처리 (통합된 함수 사용)
+  const onScheduleChanged = useCallback(async (newSchedule: Schedule) => {
+    console.log('🔄 TimeTable: Schedule changing to:', newSchedule.name);
     
-    // ✅ 즉시 스케줄과 주간 업데이트 (useEffect가 이벤트 로딩 처리)
-    setSchedule(newSchedule);
-    const focusWeek = calculateFocusWeek(newSchedule);
-    setCurrentWeek(focusWeek);
-    
-    console.log('✅ TimeTable: Schedule and week updated immediately');
-  };
+    try {
+      // ✅ 통합된 loadAllData로 스케줄과 데이터를 한 번에 업데이트
+      const focusWeek = calculateFocusWeek(newSchedule);
+      await loadAllData(newSchedule, focusWeek, true);
+      
+      console.log('✅ TimeTable: Schedule and data updated successfully');
+    } catch (error) {
+      console.error('❌ Error changing schedule:', error);
+      Alert.alert('오류', '스케줄 변경 중 오류가 발생했습니다.');
+    }
+  }, [loadAllData, calculateFocusWeek]);
 
-  const onScheduleUpdated = (updatedSchedule: Schedule) => {
-    setSchedule(updatedSchedule);
-  };
+  const onScheduleUpdated = useCallback((updatedSchedule: Schedule) => {
+    updateStateBatch({ schedule: updatedSchedule });
+  }, [updateStateBatch]);
 
-  const handleRefreshHolidaysWithAlert = async () => {
+  const handleRefreshHolidaysWithAlert = useCallback(async () => {
     try {
       Alert.alert(
         '공휴일 업데이트',
@@ -189,10 +227,10 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     } catch (error) {
       console.error('Error in refresh holidays:', error);
     }
-  };
+  }, [handleRefreshHolidays]);
 
-  // 로딩 상태 처리
-  if (!schedule) {
+  // ✅ 로딩 상태 처리 (초기 로딩과 데이터 로딩 구분)
+  if (!schedule && !isLoadingEvents) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.loadingContainer}>
@@ -203,19 +241,23 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
     );
   }
 
-  // 계산된 값들
-  const weekDays = getWeekDays(schedule, currentWeek);
-  const timeSlots = getTimeSlots(schedule);
-  const dayWidth = calculateDayWidth(screenWidth, schedule);
-
   return (
     <SafeAreaView style={styles.container}>
+      {/* ✅ 부드러운 로딩 오버레이 (기존 UI 위에 표시) */}
+      {isLoadingEvents && (
+        <View style={styles.loadingOverlay}>
+          <View style={styles.loadingIndicator}>
+            <ActivityIndicator size="small" color="#007AFF" />
+          </View>
+        </View>
+      )}
+
       {/* 헤더 */}
       <TimeTableHeader
-        schedule={schedule}
+        schedule={schedule!}
         onScheduleDropdownPress={openScheduleDropdown}
         captureRef={captureRef}
-        filename={`${schedule.name}_${currentWeek.format('YYYY-MM-DD')}`}
+        filename={`${schedule!.name}_${currentWeek.format('YYYY-MM-DD')}`}
         onRefreshHolidays={handleRefreshHolidaysWithAlert}
         isLoadingHolidays={isLoadingHolidays}
       />
@@ -238,27 +280,15 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
           holidays={holidays}
         />
 
-        {/* ✅ 로딩 오버레이와 시간표 그리드 */}
-        <View style={styles.gridContainer}>
-          <TimeTableGrid
-            timeSlots={timeSlots}
-            weekDays={weekDays}
-            dayWidth={dayWidth}
-            events={events}
-            holidays={holidays}
-            onCellPress={handleCellPress}
-            isLoading={isLoadingEvents}
-          />
-          
-          {/* ✅ 부드러운 로딩 오버레이 */}
-          {isLoadingEvents && (
-            <View style={styles.loadingOverlay}>
-              <View style={styles.loadingIndicator}>
-                <ActivityIndicator size="small" color="#007AFF" />
-              </View>
-            </View>
-          )}
-        </View>
+        {/* 시간표 그리드 */}
+        <TimeTableGrid
+          timeSlots={timeSlots}
+          weekDays={weekDays}
+          dayWidth={dayWidth}
+          events={events}
+          holidays={holidays}
+          onCellPress={handleCellPress}
+        />
       </ViewShot>
 
       {/* 스케줄 드롭다운 모달 */}
@@ -266,9 +296,9 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
         visible={showScheduleDropdown}
         onClose={closeScheduleDropdown}
         schedules={allSchedules}
-        currentSchedule={schedule}
+        currentSchedule={schedule!}
         onScheduleChange={(selectedSchedule) => 
-          handleScheduleChange(selectedSchedule, schedule, onScheduleChanged)
+          handleScheduleChange(selectedSchedule, schedule!, onScheduleChanged)
         }
         onEditSchedule={handleEditScheduleName}
         onCreateNew={handleCreateNewSchedule}
@@ -280,7 +310,7 @@ const TimeTableScreen: React.FC<Props> = ({ navigation }) => {
         onClose={closeEditModal}
         scheduleName={editScheduleName}
         onScheduleNameChange={setEditScheduleName}
-        onSave={() => handleSaveScheduleName(schedule, onScheduleUpdated)}
+        onSave={() => handleSaveScheduleName(schedule!, onScheduleUpdated)}
       />
     </SafeAreaView>
   );
@@ -301,14 +331,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
   },
-  captureArea: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  gridContainer: {
-    flex: 1,
-    position: 'relative',
-  },
   loadingOverlay: {
     position: 'absolute',
     top: 0,
@@ -317,17 +339,40 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   loadingIndicator: {
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
     borderRadius: 20,
     padding: 8,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
-      height: 1,
+      height: 2,
     },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-    elevation: 3,
+    shadowOpacity: 0.25,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  captureArea: {
+    flex: 1,
+    backgroundColor: '#fff',
+  },
+  captureHeader: {
+    alignItems: 'center',
+    paddingVertical: 15,
+    paddingHorizontal: 20,
+    borderBottomWidth: 2,
+    borderBottomColor: '#007AFF',
+    backgroundColor: '#f8f9fa',
+  },
+  captureTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 5,
+  },
+  captureSubtitle: {
+    fontSize: 16,
+    color: '#666',
+    fontWeight: '500',
   },
 });
 

@@ -5,35 +5,27 @@ import DatabaseService, { Schedule } from '../services/DatabaseService';
 
 interface UseTimeTableFocusProps {
   schedule: Schedule | null;
-  currentWeek: moment.Moment;
-  setSchedule: (schedule: Schedule | null) => void;
-  setCurrentWeek: (week: moment.Moment) => void;
+  loadAllData: (schedule?: Schedule, week?: moment.Moment, showLoading?: boolean) => Promise<void>;
   calculateFocusWeek: (schedule: Schedule) => moment.Moment;
   loadAllSchedules: () => Promise<void>;
-  loadEvents: () => Promise<void>;
-  loadHolidaysForCurrentPeriod: () => Promise<void>;
 }
 
 export const useTimeTableFocus = ({
   schedule,
-  currentWeek,
-  setSchedule,
-  setCurrentWeek,
+  loadAllData,
   calculateFocusWeek,
   loadAllSchedules,
-  loadEvents,
-  loadHolidaysForCurrentPeriod,
 }: UseTimeTableFocusProps) => {
   
-  // 🔧 중복 호출 방지를 위한 ref
+  // ✅ 중복 호출 방지를 위한 ref
   const isHandlingFocusRef = useRef(false);
   const lastScheduleIdRef = useRef<number | null>(schedule?.id || null);
   
-  // 화면에 포커스될 때마다 실행
+  // ✅ 화면에 포커스될 때마다 실행 (간소화된 로직)
   useFocusEffect(
     useCallback(() => {
       const handleFocus = async () => {
-        // 🔧 이미 처리 중이면 무시
+        // 이미 처리 중이면 무시
         if (isHandlingFocusRef.current) {
           console.log('🔄 [Focus] Already handling focus, skipping...');
           return;
@@ -42,42 +34,37 @@ export const useTimeTableFocus = ({
         isHandlingFocusRef.current = true;
         
         try {
-          console.log('🔍 [Focus] Screen focused - checking for schedule changes (immediate)...');
+          console.log('🔍 [Focus] Screen focused - checking for schedule changes...');
           
-          // ✅ 즉시 스케줄 목록 새로고침
-          await loadAllSchedules();
+          // ✅ 스케줄 목록 새로고침 (백그라운드)
+          loadAllSchedules();
           
-          // ✅ 즉시 활성 스케줄 확인 및 업데이트
+          // ✅ 활성 스케줄 확인
           const currentActiveSchedule = await DatabaseService.getActiveSchedule();
-          console.log('🔍 [Focus] Current active schedule from DB:', currentActiveSchedule?.name, 'ID:', currentActiveSchedule?.id);
-          console.log('🔍 [Focus] Current schedule in state:', schedule?.name, 'ID:', schedule?.id);
           
           if (currentActiveSchedule) {
             const currentScheduleId = currentActiveSchedule.id;
             const stateScheduleId = schedule?.id;
             
-            // 🔧 스케줄 ID 기반으로 변경 여부 확인
+            // ✅ 스케줄 변경 감지
             if (stateScheduleId !== currentScheduleId) {
-              console.log('🔄 [Focus] Schedule change detected (immediate update):', {
+              console.log('🔄 [Focus] Schedule change detected:', {
                 from: stateScheduleId,
                 to: currentScheduleId,
                 scheduleName: currentActiveSchedule.name
               });
               
-              // ✅ 즉시 스케줄과 주간 업데이트
-              setSchedule(currentActiveSchedule);
+              // ✅ 새 스케줄에 맞는 주간 계산
               const focusWeek = calculateFocusWeek(currentActiveSchedule);
-              setCurrentWeek(focusWeek);
               
-              console.log('📅 [Focus] Focusing to week (immediate):', focusWeek.format('YYYY-MM-DD'));
+              // ✅ 통합된 loadAllData로 한 번에 처리
+              await loadAllData(currentActiveSchedule, focusWeek, false);
               
               // ref 업데이트
               lastScheduleIdRef.current = currentScheduleId;
               
-              // ✅ useTimeTableData의 useEffect에서 자동으로 로드하므로 여기서는 제거
-              console.log('✅ [Focus] Schedule and week updated immediately, useEffect will handle data loading');
-              
-              return; // 새 스케줄로 전환했으므로 여기서 리턴
+              console.log('✅ [Focus] Schedule and data updated successfully');
+              return;
             } else {
               console.log('✅ [Focus] Same schedule, no change needed');
             }
@@ -85,27 +72,28 @@ export const useTimeTableFocus = ({
             console.log('⚠️ [Focus] No active schedule found in DB');
           }
 
-          // ✅ 기존 스케줄이 있는 경우에만 공휴일 로드 (이벤트는 useEffect에서 처리)
+          // ✅ 기존 스케줄이 있는 경우 데이터만 새로고침 (로딩 표시 없이)
           if (schedule && lastScheduleIdRef.current === schedule.id) {
-            console.log('📊 [Focus] Loading holidays for existing schedule (immediate)');
-            // ✅ 공휴일 로딩도 즉시 실행 (setTimeout 제거)
-            loadHolidaysForCurrentPeriod();
+            console.log('📊 [Focus] Refreshing data for existing schedule');
+            await loadAllData(undefined, undefined, false);
           }
           
         } catch (error) {
           console.error('❌ [Focus] Error in focus handler:', error);
         } finally {
-          // ✅ 처리 완료 플래그 즉시 해제 (딜레이 제거)
+          // ✅ 처리 완료 플래그 즉시 해제
           isHandlingFocusRef.current = false;
         }
       };
       
+      // ✅ 비동기 함수 즉시 실행 (딜레이 제거)
       handleFocus();
     }, [
-      // ✅ 의존성 배열 최적화 - 필수 값들만 포함
+      // ✅ 의존성 배열 최소화
       schedule?.id,
-      loadAllSchedules,
-      loadHolidaysForCurrentPeriod
+      loadAllData,
+      calculateFocusWeek,
+      loadAllSchedules
     ])
   );
 };

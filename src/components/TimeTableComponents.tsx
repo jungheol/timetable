@@ -409,7 +409,7 @@ const dateHeaderStyles = StyleSheet.create({
     justifyContent: 'center',
   },
   dayColumn: {
-    paddingVertical: 15,
+    paddingVertical: 10,
     alignItems: 'center',
     borderLeftWidth: 1,
     borderLeftColor: '#e0e0e0',
@@ -449,7 +449,7 @@ const dateHeaderStyles = StyleSheet.create({
     fontWeight: 'bold',
   },
   holidayIndicator: {
-    marginTop: 2,
+    marginTop: 6,
     paddingHorizontal: 4,
     paddingVertical: 1,
     backgroundColor: '#FFE6E6',
